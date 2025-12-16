@@ -1,0 +1,5 @@
+# scylla_fdw extension
+comment = 'Foreign data wrapper for ScyllaDB'
+default_version = '1.0'
+module_pathname = '$libdir/scylla_fdw'
+relocatable = true
