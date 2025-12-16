@@ -29,6 +29,7 @@
 #include "optimizer/pathnode.h"
 #include "optimizer/planmain.h"
 #include "optimizer/plancat.h"
+#include "optimizer/appendinfo.h"
 #include "optimizer/restrictinfo.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
