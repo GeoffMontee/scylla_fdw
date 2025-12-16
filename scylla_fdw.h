@@ -24,9 +24,11 @@
 #include "catalog/pg_foreign_table.h"
 #include "catalog/pg_user_mapping.h"
 #include "commands/defrem.h"
+#include "commands/explain.h"
 #include "access/reloptions.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/planmain.h"
+#include "optimizer/plancat.h"
 #include "optimizer/restrictinfo.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
@@ -34,6 +36,7 @@
 #include "utils/syscache.h"
 #include "funcapi.h"
 #include "miscadmin.h"
+#include "commands/copy.h"
 
 /* Version */
 #define SCYLLA_FDW_VERSION "1.0.0"
@@ -349,5 +352,52 @@ AttrNumber get_column_by_name(Relation rel, const char *colname);
 List *parse_column_list(Relation rel, const char *collist);
 bool is_partition_key_column(ScyllaFdwRelationInfo *fpinfo, AttrNumber attnum, Relation rel);
 bool is_clustering_key_column(ScyllaFdwRelationInfo *fpinfo, AttrNumber attnum, Relation rel);
+
+/*
+ * FDW callback function prototypes (implemented in scylla_fdw_modify.c)
+ */
+extern void scyllaAddForeignUpdateTargets(PlannerInfo *root,
+                                          Index rtindex,
+                                          RangeTblEntry *target_rte,
+                                          Relation target_relation);
+extern List *scyllaPlanForeignModify(PlannerInfo *root,
+                                     ModifyTable *plan,
+                                     Index resultRelation,
+                                     int subplan_index);
+extern void scyllaBeginForeignModify(ModifyTableState *mtstate,
+                                     ResultRelInfo *resultRelInfo,
+                                     List *fdw_private,
+                                     int subplan_index,
+                                     int eflags);
+extern TupleTableSlot *scyllaExecForeignInsert(EState *estate,
+                                               ResultRelInfo *resultRelInfo,
+                                               TupleTableSlot *slot,
+                                               TupleTableSlot *planSlot);
+extern TupleTableSlot *scyllaExecForeignUpdate(EState *estate,
+                                               ResultRelInfo *resultRelInfo,
+                                               TupleTableSlot *slot,
+                                               TupleTableSlot *planSlot);
+extern TupleTableSlot *scyllaExecForeignDelete(EState *estate,
+                                               ResultRelInfo *resultRelInfo,
+                                               TupleTableSlot *slot,
+                                               TupleTableSlot *planSlot);
+extern void scyllaEndForeignModify(EState *estate,
+                                   ResultRelInfo *resultRelInfo);
+extern void scyllaGetForeignJoinPaths(PlannerInfo *root,
+                                      RelOptInfo *joinrel,
+                                      RelOptInfo *outerrel,
+                                      RelOptInfo *innerrel,
+                                      JoinType jointype,
+                                      JoinPathExtraData *extra);
+extern void scyllaExplainForeignScan(ForeignScanState *node, ExplainState *es);
+extern void scyllaExplainForeignModify(ModifyTableState *mtstate,
+                                       ResultRelInfo *rinfo,
+                                       List *fdw_private,
+                                       int subplan_index,
+                                       ExplainState *es);
+extern bool scyllaAnalyzeForeignTable(Relation relation,
+                                      AcquireSampleRowsFunc *func,
+                                      BlockNumber *totalpages);
+extern List *scyllaImportForeignSchema(ImportForeignSchemaStmt *stmt, Oid serverOid);
 
 #endif   /* SCYLLA_FDW_H */

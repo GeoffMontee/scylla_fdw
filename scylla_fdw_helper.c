@@ -356,8 +356,9 @@ get_relation_column_count(Relation rel)
 {
     TupleDesc   tupdesc = RelationGetDescr(rel);
     int         count = 0;
+    int         i;
 
-    for (int i = 0; i < tupdesc->natts; i++)
+    for (i = 0; i < tupdesc->natts; i++)
     {
         Form_pg_attribute attr = TupleDescAttr(tupdesc, i);
         if (!attr->attisdropped)
@@ -375,8 +376,9 @@ AttrNumber
 get_column_by_name(Relation rel, const char *colname)
 {
     TupleDesc   tupdesc = RelationGetDescr(rel);
+    int         i;
 
-    for (int i = 0; i < tupdesc->natts; i++)
+    for (i = 0; i < tupdesc->natts; i++)
     {
         Form_pg_attribute attr = TupleDescAttr(tupdesc, i);
         if (!attr->attisdropped &&

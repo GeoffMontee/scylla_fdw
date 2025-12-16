@@ -16,12 +16,10 @@
 #include "access/sysattr.h"
 #include "access/table.h"
 #include "catalog/pg_type.h"
-#include "commands/explain.h"
 #include "executor/executor.h"
 #include "nodes/makefuncs.h"
 #include "optimizer/optimizer.h"
 #include "parser/parsetree.h"
-#include "utils/lsyscache.h"
 
 /*
  * scyllaAddForeignUpdateTargets
@@ -39,6 +37,11 @@ scyllaAddForeignUpdateTargets(PlannerInfo *root,
     ListCell   *lc;
     char       *pk_str = NULL;
     List       *pk_cols = NIL;
+    char       *str;
+    char       *token;
+    char       *saveptr;
+    char       *end;
+    int         i;
 
     table = GetForeignTable(relid);
 
@@ -61,34 +64,29 @@ scyllaAddForeignUpdateTargets(PlannerInfo *root,
     }
 
     /* Parse primary key columns (comma-separated) */
+    str = pstrdup(pk_str);
+
+    for (token = strtok_r(str, ",", &saveptr);
+         token != NULL;
+         token = strtok_r(NULL, ",", &saveptr))
     {
-        char *str = pstrdup(pk_str);
-        char *token;
-        char *saveptr;
+        /* Trim whitespace */
+        while (*token == ' ') token++;
+        end = token + strlen(token) - 1;
+        while (end > token && *end == ' ') *end-- = '\0';
 
-        for (token = strtok_r(str, ",", &saveptr);
-             token != NULL;
-             token = strtok_r(NULL, ",", &saveptr))
-        {
-            /* Trim whitespace */
-            while (*token == ' ') token++;
-            char *end = token + strlen(token) - 1;
-            while (end > token && *end == ' ') *end-- = '\0';
-
-            pk_cols = lappend(pk_cols, makeString(pstrdup(token)));
-        }
+        pk_cols = lappend(pk_cols, makeString(pstrdup(token)));
     }
 
     /* Add each primary key column as a junk attribute */
     foreach(lc, pk_cols)
     {
         char       *colname = strVal(lfirst(lc));
-        int         attnum;
+        int         attnum = 0;
         Var        *var;
 
         /* Find the attribute number */
-        attnum = 0;
-        for (int i = 0; i < tupdesc->natts; i++)
+        for (i = 0; i < tupdesc->natts; i++)
         {
             Form_pg_attribute attr = TupleDescAttr(tupdesc, i);
             if (strcmp(NameStr(attr->attname), colname) == 0)
@@ -129,26 +127,33 @@ scyllaPlanForeignModify(PlannerInfo *root,
     CmdType     operation = plan->operation;
     RangeTblEntry *rte = planner_rt_fetch(resultRelation, root);
     Relation    rel;
-    StringInfoData sql;
     List       *targetAttrs = NIL;
-    List       *returningList = NIL;
-    List       *retrieved_attrs = NIL;
-    List       *fdw_private;
+    StringInfoData sql;
+    TupleDesc   tupdesc;
+    int         attnum;
+    char       *pk_str = NULL;
+    ListCell   *lc;
+    ForeignTable *table;
+    int        *pk_attrs;
+    int         num_pk_attrs;
+    char       *str;
+    char       *token;
+    char       *saveptr;
+    char       *end;
+    char       *query;
+    int         idx;
+    int         i;
 
     initStringInfo(&sql);
 
-    /* Get the relation */
+    /* Open the relation to get column info */
     rel = table_open(rte->relid, NoLock);
+    tupdesc = RelationGetDescr(rel);
 
-    /*
-     * In INSERT, we need all target columns; in UPDATE, we need only the
-     * columns being updated; in DELETE, we need the primary key columns.
-     */
+    /* Get target columns for the operation */
     if (operation == CMD_INSERT)
     {
-        TupleDesc   tupdesc = RelationGetDescr(rel);
-        int         attnum;
-
+        /* For INSERT, include all non-dropped columns */
         for (attnum = 1; attnum <= tupdesc->natts; attnum++)
         {
             Form_pg_attribute attr = TupleDescAttr(tupdesc, attnum - 1);
@@ -159,15 +164,7 @@ scyllaPlanForeignModify(PlannerInfo *root,
     }
     else if (operation == CMD_UPDATE)
     {
-        TupleDesc   tupdesc = RelationGetDescr(rel);
-        int         attnum;
-        
-        /*
-         * For UPDATE, we need to determine which columns are being updated.
-         * In PostgreSQL 17+, the approach to finding updated columns changed.
-         * For simplicity, we include all non-primary-key columns in the SET clause.
-         * The actual values will be bound at execution time.
-         */
+        /* For UPDATE, include all non-dropped columns */
         for (attnum = 1; attnum <= tupdesc->natts; attnum++)
         {
             Form_pg_attribute attr = TupleDescAttr(tupdesc, attnum - 1);
@@ -183,132 +180,114 @@ scyllaPlanForeignModify(PlannerInfo *root,
     switch (operation)
     {
         case CMD_INSERT:
-            {
-                char *query = scylla_build_insert_query(rel, targetAttrs);
-                appendStringInfoString(&sql, query);
-                pfree(query);
-            }
+            query = scylla_build_insert_query(rel, targetAttrs);
+            appendStringInfoString(&sql, query);
+            pfree(query);
             break;
 
         case CMD_UPDATE:
-            {
-                /* Get primary key columns for WHERE clause */
-                ForeignTable *table = GetForeignTable(rte->relid);
-                char *pk_str = NULL;
-                int *pk_attrs = NULL;
-                int num_pk_attrs = 0;
-                ListCell *lc;
+            table = GetForeignTable(rte->relid);
 
-                foreach(lc, table->options)
+            /* Get primary key columns */
+            foreach(lc, table->options)
+            {
+                DefElem *def = (DefElem *) lfirst(lc);
+                if (strcmp(def->defname, OPT_PRIMARY_KEY) == 0)
                 {
-                    DefElem *def = (DefElem *) lfirst(lc);
-                    if (strcmp(def->defname, OPT_PRIMARY_KEY) == 0)
+                    pk_str = defGetString(def);
+                    break;
+                }
+            }
+
+            if (pk_str == NULL)
+                ereport(ERROR,
+                        (errcode(ERRCODE_FDW_UNABLE_TO_CREATE_EXECUTION),
+                         errmsg("primary_key option required for UPDATE")));
+
+            /* Parse and convert to attribute numbers */
+            num_pk_attrs = 1;
+            for (str = pk_str; *str; str++)
+                if (*str == ',') num_pk_attrs++;
+
+            pk_attrs = (int *) palloc(num_pk_attrs * sizeof(int));
+            str = pstrdup(pk_str);
+            idx = 0;
+            for (token = strtok_r(str, ",", &saveptr);
+                 token != NULL;
+                 token = strtok_r(NULL, ",", &saveptr))
+            {
+                while (*token == ' ') token++;
+                end = token + strlen(token) - 1;
+                while (end > token && *end == ' ') *end-- = '\0';
+
+                for (i = 0; i < tupdesc->natts; i++)
+                {
+                    Form_pg_attribute attr = TupleDescAttr(tupdesc, i);
+                    if (strcmp(NameStr(attr->attname), token) == 0)
                     {
-                        pk_str = defGetString(def);
+                        pk_attrs[idx++] = i + 1;
                         break;
                     }
                 }
-
-                if (pk_str != NULL)
-                {
-                    /* Parse and find pk attr numbers */
-                    char *str = pstrdup(pk_str);
-                    char *token;
-                    char *saveptr;
-                    TupleDesc tupdesc = RelationGetDescr(rel);
-                    List *pk_list = NIL;
-
-                    for (token = strtok_r(str, ",", &saveptr);
-                         token != NULL;
-                         token = strtok_r(NULL, ",", &saveptr))
-                    {
-                        while (*token == ' ') token++;
-                        char *end = token + strlen(token) - 1;
-                        while (end > token && *end == ' ') *end-- = '\0';
-
-                        for (int i = 0; i < tupdesc->natts; i++)
-                        {
-                            if (strcmp(NameStr(TupleDescAttr(tupdesc, i)->attname), token) == 0)
-                            {
-                                pk_list = lappend_int(pk_list, i + 1);
-                                break;
-                            }
-                        }
-                    }
-
-                    num_pk_attrs = list_length(pk_list);
-                    pk_attrs = (int *) palloc(num_pk_attrs * sizeof(int));
-                    int idx = 0;
-                    foreach_int(attr, pk_list)
-                    {
-                        pk_attrs[idx++] = attr;
-                    }
-                }
-
-                char *query = scylla_build_update_query(rel, targetAttrs, pk_attrs, num_pk_attrs);
-                appendStringInfoString(&sql, query);
-                pfree(query);
             }
+            num_pk_attrs = idx;
+
+            query = scylla_build_update_query(rel, targetAttrs, pk_attrs, num_pk_attrs);
+            appendStringInfoString(&sql, query);
+            pfree(query);
             break;
 
         case CMD_DELETE:
-            {
-                /* Get primary key columns for WHERE clause */
-                ForeignTable *table = GetForeignTable(rte->relid);
-                char *pk_str = NULL;
-                int *pk_attrs = NULL;
-                int num_pk_attrs = 0;
-                ListCell *lc;
+            table = GetForeignTable(rte->relid);
 
-                foreach(lc, table->options)
+            /* Get primary key columns */
+            pk_str = NULL;
+            foreach(lc, table->options)
+            {
+                DefElem *def = (DefElem *) lfirst(lc);
+                if (strcmp(def->defname, OPT_PRIMARY_KEY) == 0)
                 {
-                    DefElem *def = (DefElem *) lfirst(lc);
-                    if (strcmp(def->defname, OPT_PRIMARY_KEY) == 0)
+                    pk_str = defGetString(def);
+                    break;
+                }
+            }
+
+            if (pk_str == NULL)
+                ereport(ERROR,
+                        (errcode(ERRCODE_FDW_UNABLE_TO_CREATE_EXECUTION),
+                         errmsg("primary_key option required for DELETE")));
+
+            /* Parse and convert to attribute numbers */
+            num_pk_attrs = 1;
+            for (str = pk_str; *str; str++)
+                if (*str == ',') num_pk_attrs++;
+
+            pk_attrs = (int *) palloc(num_pk_attrs * sizeof(int));
+            str = pstrdup(pk_str);
+            idx = 0;
+            for (token = strtok_r(str, ",", &saveptr);
+                 token != NULL;
+                 token = strtok_r(NULL, ",", &saveptr))
+            {
+                while (*token == ' ') token++;
+                end = token + strlen(token) - 1;
+                while (end > token && *end == ' ') *end-- = '\0';
+
+                for (i = 0; i < tupdesc->natts; i++)
+                {
+                    Form_pg_attribute attr = TupleDescAttr(tupdesc, i);
+                    if (strcmp(NameStr(attr->attname), token) == 0)
                     {
-                        pk_str = defGetString(def);
+                        pk_attrs[idx++] = i + 1;
                         break;
                     }
                 }
-
-                if (pk_str != NULL)
-                {
-                    char *str = pstrdup(pk_str);
-                    char *token;
-                    char *saveptr;
-                    TupleDesc tupdesc = RelationGetDescr(rel);
-                    List *pk_list = NIL;
-
-                    for (token = strtok_r(str, ",", &saveptr);
-                         token != NULL;
-                         token = strtok_r(NULL, ",", &saveptr))
-                    {
-                        while (*token == ' ') token++;
-                        char *end = token + strlen(token) - 1;
-                        while (end > token && *end == ' ') *end-- = '\0';
-
-                        for (int i = 0; i < tupdesc->natts; i++)
-                        {
-                            if (strcmp(NameStr(TupleDescAttr(tupdesc, i)->attname), token) == 0)
-                            {
-                                pk_list = lappend_int(pk_list, i + 1);
-                                break;
-                            }
-                        }
-                    }
-
-                    num_pk_attrs = list_length(pk_list);
-                    pk_attrs = (int *) palloc(num_pk_attrs * sizeof(int));
-                    int idx = 0;
-                    foreach_int(attr, pk_list)
-                    {
-                        pk_attrs[idx++] = attr;
-                    }
-                }
-
-                char *query = scylla_build_delete_query(rel, pk_attrs, num_pk_attrs);
-                appendStringInfoString(&sql, query);
-                pfree(query);
             }
+            num_pk_attrs = idx;
+
+            query = scylla_build_delete_query(rel, pk_attrs, num_pk_attrs);
+            appendStringInfoString(&sql, query);
+            pfree(query);
             break;
 
         default:
@@ -319,16 +298,12 @@ scyllaPlanForeignModify(PlannerInfo *root,
     table_close(rel, NoLock);
 
     /*
-     * Build fdw_private list:
-     *  1) CQL query string
-     *  2) Integer list of target attribute numbers for INSERT/UPDATE
-     *  3) Operation type
+     * Return the command string as fdw_private list for use in executor.
+     * Items:
+     *  1) CQL command string
+     *  2) Target attribute list
      */
-    fdw_private = list_make3(makeString(sql.data),
-                             targetAttrs,
-                             makeInteger(operation));
-
-    return fdw_private;
+    return list_make2(makeString(sql.data), targetAttrs);
 }
 
 /*
@@ -350,6 +325,15 @@ scyllaBeginForeignModify(ModifyTableState *mtstate,
     UserMapping *user;
     char       *error_msg = NULL;
     ListCell   *lc;
+    char       *host = DEFAULT_HOST;
+    int         port = DEFAULT_PORT;
+    char       *username = NULL;
+    char       *password = NULL;
+    int         connect_timeout = DEFAULT_CONNECT_TIMEOUT;
+    bool        use_ssl = false;
+    char       *ssl_cert = NULL;
+    char       *ssl_key = NULL;
+    char       *ssl_ca = NULL;
 
     /* Do nothing for EXPLAIN without ANALYZE */
     if (eflags & EXEC_FLAG_EXPLAIN_ONLY)
@@ -366,93 +350,68 @@ scyllaBeginForeignModify(ModifyTableState *mtstate,
     server = GetForeignServer(table->serverid);
     user = GetUserMapping(userid, server->serverid);
 
-    /* Extract connection options and connect */
+    /* Extract connection options */
+    foreach(lc, server->options)
     {
-        char *host = DEFAULT_HOST;
-        int port = DEFAULT_PORT;
-        char *username = NULL;
-        char *password = NULL;
-        int connect_timeout = DEFAULT_CONNECT_TIMEOUT;
-        bool use_ssl = false;
-        char *ssl_cert = NULL;
-        char *ssl_key = NULL;
-        char *ssl_ca = NULL;
-
-        foreach(lc, server->options)
-        {
-            DefElem *def = (DefElem *) lfirst(lc);
-            if (strcmp(def->defname, OPT_HOST) == 0)
-                host = defGetString(def);
-            else if (strcmp(def->defname, OPT_PORT) == 0)
-                port = atoi(defGetString(def));
-            else if (strcmp(def->defname, OPT_CONNECT_TIMEOUT) == 0)
-                connect_timeout = atoi(defGetString(def));
-            else if (strcmp(def->defname, OPT_SSL) == 0)
-                use_ssl = defGetBoolean(def);
-            else if (strcmp(def->defname, OPT_SSL_CERT) == 0)
-                ssl_cert = defGetString(def);
-            else if (strcmp(def->defname, OPT_SSL_KEY) == 0)
-                ssl_key = defGetString(def);
-            else if (strcmp(def->defname, OPT_SSL_CA) == 0)
-                ssl_ca = defGetString(def);
-        }
-
-        foreach(lc, user->options)
-        {
-            DefElem *def = (DefElem *) lfirst(lc);
-            if (strcmp(def->defname, OPT_USERNAME) == 0)
-                username = defGetString(def);
-            else if (strcmp(def->defname, OPT_PASSWORD) == 0)
-                password = defGetString(def);
-        }
-
-        fmstate->conn = scylla_connect(host, port, username, password,
-                                       connect_timeout, use_ssl,
-                                       ssl_cert, ssl_key, ssl_ca,
-                                       &error_msg);
-        if (fmstate->conn == NULL)
-            ereport(ERROR,
-                    (errcode(ERRCODE_FDW_UNABLE_TO_ESTABLISH_CONNECTION),
-                     errmsg("could not connect to ScyllaDB: %s",
-                            error_msg ? error_msg : "unknown error")));
+        DefElem *def = (DefElem *) lfirst(lc);
+        if (strcmp(def->defname, OPT_HOST) == 0)
+            host = defGetString(def);
+        else if (strcmp(def->defname, OPT_PORT) == 0)
+            port = atoi(defGetString(def));
+        else if (strcmp(def->defname, OPT_CONNECT_TIMEOUT) == 0)
+            connect_timeout = atoi(defGetString(def));
+        else if (strcmp(def->defname, OPT_SSL) == 0)
+            use_ssl = defGetBoolean(def);
+        else if (strcmp(def->defname, OPT_SSL_CERT) == 0)
+            ssl_cert = defGetString(def);
+        else if (strcmp(def->defname, OPT_SSL_KEY) == 0)
+            ssl_key = defGetString(def);
+        else if (strcmp(def->defname, OPT_SSL_CA) == 0)
+            ssl_ca = defGetString(def);
     }
 
-    /* Get query and target attrs from fdw_private */
+    foreach(lc, user->options)
+    {
+        DefElem *def = (DefElem *) lfirst(lc);
+        if (strcmp(def->defname, OPT_USERNAME) == 0)
+            username = defGetString(def);
+        else if (strcmp(def->defname, OPT_PASSWORD) == 0)
+            password = defGetString(def);
+    }
+
+    /* Connect to ScyllaDB */
+    fmstate->conn = scylla_connect(host, port, username, password,
+                                   connect_timeout, use_ssl,
+                                   ssl_cert, ssl_key, ssl_ca,
+                                   &error_msg);
+    if (fmstate->conn == NULL)
+        ereport(ERROR,
+                (errcode(ERRCODE_FDW_UNABLE_TO_ESTABLISH_CONNECTION),
+                 errmsg("could not connect to ScyllaDB: %s",
+                        error_msg ? error_msg : "unknown error")));
+
+    /* Get the CQL command from fdw_private */
     fmstate->query = strVal(list_nth(fdw_private, 0));
     fmstate->target_attrs = (List *) list_nth(fdw_private, 1);
-    fmstate->operation = intVal(list_nth(fdw_private, 2));
-    fmstate->rel = rel;
-    fmstate->tupdesc = RelationGetDescr(rel);
 
     /* Prepare the statement */
     fmstate->prepared = scylla_prepare_query(fmstate->conn, fmstate->query, &error_msg);
     if (fmstate->prepared == NULL)
         ereport(ERROR,
                 (errcode(ERRCODE_FDW_ERROR),
-                 errmsg("could not prepare statement: %s",
+                 errmsg("could not prepare ScyllaDB statement: %s",
                         error_msg ? error_msg : "unknown error")));
 
-    /* Set up parameter info */
+    /* Store additional state */
+    fmstate->rel = rel;
+    fmstate->tupdesc = RelationGetDescr(rel);
+    fmstate->operation = mtstate->operation;
     fmstate->num_params = list_length(fmstate->target_attrs);
-    fmstate->param_flinfo = (FmgrInfo *) palloc0(fmstate->num_params * sizeof(FmgrInfo));
-    fmstate->param_types = (Oid *) palloc0(fmstate->num_params * sizeof(Oid));
-
-    {
-        int i = 0;
-        foreach_int(attnum, fmstate->target_attrs)
-        {
-            Form_pg_attribute attr = TupleDescAttr(fmstate->tupdesc, attnum - 1);
-            fmstate->param_types[i] = attr->atttypid;
-            getTypeOutputInfo(attr->atttypid, &fmstate->param_flinfo[i].fn_oid, 
-                             (bool *) &fmstate->param_flinfo[i].fn_strict);
-            i++;
-        }
-    }
 }
 
 /*
  * scyllaExecForeignInsert
- *        Execute an INSERT operation
+ *        Insert one row into a foreign table
  */
 TupleTableSlot *
 scyllaExecForeignInsert(EState *estate,
@@ -461,47 +420,51 @@ scyllaExecForeignInsert(EState *estate,
                         TupleTableSlot *planSlot)
 {
     ScyllaFdwModifyState *fmstate = (ScyllaFdwModifyState *) resultRelInfo->ri_FdwState;
-    void *statement;
-    void *result;
-    char *error_msg = NULL;
-    int param_idx = 0;
+    void       *statement;
+    char       *error_msg = NULL;
+    ListCell   *lc;
+    int         pindex = 0;
 
+    /* Create a statement from the prepared query */
     statement = scylla_create_statement(fmstate->prepared);
+    if (statement == NULL)
+        ereport(ERROR,
+                (errcode(ERRCODE_FDW_ERROR),
+                 errmsg("could not create ScyllaDB statement")));
 
-    /* Bind parameters */
-    foreach_int(attnum, fmstate->target_attrs)
+    /* Bind parameters from the slot */
+    foreach(lc, fmstate->target_attrs)
     {
-        Datum value;
-        bool isnull;
+        int         attnum = lfirst_int(lc);
+        Datum       value;
+        bool        isnull;
 
         value = slot_getattr(slot, attnum, &isnull);
-        scylla_convert_from_pg(value, fmstate->param_types[param_idx],
-                               statement, param_idx, isnull);
-        param_idx++;
+        scylla_convert_from_pg(value, fmstate->tupdesc->attrs[attnum - 1].atttypid,
+                               statement, pindex, isnull);
+        pindex++;
     }
 
     /* Execute the statement */
-    result = scylla_execute_prepared(fmstate->conn, fmstate->prepared,
-                                     &statement, 1,
-                                     SCYLLA_CONSISTENCY_LOCAL_QUORUM,
-                                     &error_msg);
-    
-    scylla_free_statement(statement);
-
-    if (result == NULL)
+    if (scylla_execute_prepared(fmstate->conn, fmstate->prepared, 
+                                &statement, 1,
+                                SCYLLA_CONSISTENCY_LOCAL_QUORUM, &error_msg) == NULL)
+    {
+        scylla_free_statement(statement);
         ereport(ERROR,
                 (errcode(ERRCODE_FDW_ERROR),
-                 errmsg("INSERT failed: %s",
+                 errmsg("ScyllaDB INSERT failed: %s",
                         error_msg ? error_msg : "unknown error")));
+    }
 
-    scylla_free_result(result);
+    scylla_free_statement(statement);
 
     return slot;
 }
 
 /*
  * scyllaExecForeignUpdate
- *        Execute an UPDATE operation
+ *        Update one row in a foreign table
  */
 TupleTableSlot *
 scyllaExecForeignUpdate(EState *estate,
@@ -510,49 +473,51 @@ scyllaExecForeignUpdate(EState *estate,
                         TupleTableSlot *planSlot)
 {
     ScyllaFdwModifyState *fmstate = (ScyllaFdwModifyState *) resultRelInfo->ri_FdwState;
-    void *statement;
-    void *result;
-    char *error_msg = NULL;
-    int param_idx = 0;
+    void       *statement;
+    char       *error_msg = NULL;
+    ListCell   *lc;
+    int         pindex = 0;
 
+    /* Create a statement from the prepared query */
     statement = scylla_create_statement(fmstate->prepared);
-
-    /* Bind SET clause parameters */
-    foreach_int(attnum, fmstate->target_attrs)
-    {
-        Datum value;
-        bool isnull;
-
-        value = slot_getattr(slot, attnum, &isnull);
-        scylla_convert_from_pg(value, fmstate->param_types[param_idx],
-                               statement, param_idx, isnull);
-        param_idx++;
-    }
-
-    /* Bind WHERE clause parameters (primary key values from planSlot) */
-    /* Note: In a full implementation, we'd iterate over pk_attrs here */
-
-    result = scylla_execute_prepared(fmstate->conn, fmstate->prepared,
-                                     &statement, 1,
-                                     SCYLLA_CONSISTENCY_LOCAL_QUORUM,
-                                     &error_msg);
-
-    scylla_free_statement(statement);
-
-    if (result == NULL)
+    if (statement == NULL)
         ereport(ERROR,
                 (errcode(ERRCODE_FDW_ERROR),
-                 errmsg("UPDATE failed: %s",
-                        error_msg ? error_msg : "unknown error")));
+                 errmsg("could not create ScyllaDB statement")));
 
-    scylla_free_result(result);
+    /* Bind parameters from the slot (SET clause values first, then WHERE values) */
+    foreach(lc, fmstate->target_attrs)
+    {
+        int         attnum = lfirst_int(lc);
+        Datum       value;
+        bool        isnull;
+
+        value = slot_getattr(slot, attnum, &isnull);
+        scylla_convert_from_pg(value, fmstate->tupdesc->attrs[attnum - 1].atttypid,
+                               statement, pindex, isnull);
+        pindex++;
+    }
+
+    /* Execute the statement */
+    if (scylla_execute_prepared(fmstate->conn, fmstate->prepared,
+                                &statement, 1,
+                                SCYLLA_CONSISTENCY_LOCAL_QUORUM, &error_msg) == NULL)
+    {
+        scylla_free_statement(statement);
+        ereport(ERROR,
+                (errcode(ERRCODE_FDW_ERROR),
+                 errmsg("ScyllaDB UPDATE failed: %s",
+                        error_msg ? error_msg : "unknown error")));
+    }
+
+    scylla_free_statement(statement);
 
     return slot;
 }
 
 /*
  * scyllaExecForeignDelete
- *        Execute a DELETE operation
+ *        Delete one row from a foreign table
  */
 TupleTableSlot *
 scyllaExecForeignDelete(EState *estate,
@@ -561,47 +526,51 @@ scyllaExecForeignDelete(EState *estate,
                         TupleTableSlot *planSlot)
 {
     ScyllaFdwModifyState *fmstate = (ScyllaFdwModifyState *) resultRelInfo->ri_FdwState;
-    void *statement;
-    void *result;
-    char *error_msg = NULL;
-    int param_idx = 0;
+    void       *statement;
+    char       *error_msg = NULL;
+    ListCell   *lc;
+    int         pindex = 0;
 
+    /* Create a statement from the prepared query */
     statement = scylla_create_statement(fmstate->prepared);
-
-    /* Bind WHERE clause parameters (primary key values) */
-    foreach_int(attnum, fmstate->target_attrs)
-    {
-        Datum value;
-        bool isnull;
-
-        /* Get value from planSlot which has the junk attributes */
-        value = slot_getattr(planSlot, attnum, &isnull);
-        scylla_convert_from_pg(value, fmstate->param_types[param_idx],
-                               statement, param_idx, isnull);
-        param_idx++;
-    }
-
-    result = scylla_execute_prepared(fmstate->conn, fmstate->prepared,
-                                     &statement, 1,
-                                     SCYLLA_CONSISTENCY_LOCAL_QUORUM,
-                                     &error_msg);
-
-    scylla_free_statement(statement);
-
-    if (result == NULL)
+    if (statement == NULL)
         ereport(ERROR,
                 (errcode(ERRCODE_FDW_ERROR),
-                 errmsg("DELETE failed: %s",
-                        error_msg ? error_msg : "unknown error")));
+                 errmsg("could not create ScyllaDB statement")));
 
-    scylla_free_result(result);
+    /* Bind primary key values from the slot */
+    foreach(lc, fmstate->target_attrs)
+    {
+        int         attnum = lfirst_int(lc);
+        Datum       value;
+        bool        isnull;
+
+        value = slot_getattr(slot, attnum, &isnull);
+        scylla_convert_from_pg(value, fmstate->tupdesc->attrs[attnum - 1].atttypid,
+                               statement, pindex, isnull);
+        pindex++;
+    }
+
+    /* Execute the statement */
+    if (scylla_execute_prepared(fmstate->conn, fmstate->prepared,
+                                &statement, 1,
+                                SCYLLA_CONSISTENCY_LOCAL_QUORUM, &error_msg) == NULL)
+    {
+        scylla_free_statement(statement);
+        ereport(ERROR,
+                (errcode(ERRCODE_FDW_ERROR),
+                 errmsg("ScyllaDB DELETE failed: %s",
+                        error_msg ? error_msg : "unknown error")));
+    }
+
+    scylla_free_statement(statement);
 
     return slot;
 }
 
 /*
  * scyllaEndForeignModify
- *        End the modification operation
+ *        End a foreign modification operation
  */
 void
 scyllaEndForeignModify(EState *estate,
@@ -616,7 +585,7 @@ scyllaEndForeignModify(EState *estate,
     if (fmstate->prepared != NULL)
         scylla_free_prepared(fmstate->prepared);
 
-    /* Disconnect */
+    /* Disconnect from ScyllaDB */
     if (fmstate->conn != NULL)
         scylla_disconnect(fmstate->conn, fmstate->cluster);
 }
@@ -624,6 +593,8 @@ scyllaEndForeignModify(EState *estate,
 /*
  * scyllaGetForeignJoinPaths
  *        Create paths for joining foreign tables on the same server
+ *
+ * Note: ScyllaDB doesn't support JOINs in CQL, so we don't add any paths.
  */
 void
 scyllaGetForeignJoinPaths(PlannerInfo *root,
@@ -633,43 +604,10 @@ scyllaGetForeignJoinPaths(PlannerInfo *root,
                           JoinType jointype,
                           JoinPathExtraData *extra)
 {
-    ScyllaFdwRelationInfo *fpinfo;
-    ScyllaFdwRelationInfo *fpinfo_o;
-    ScyllaFdwRelationInfo *fpinfo_i;
-    ForeignPath *joinpath;
-    double      rows;
-    int         width;
-    Cost        startup_cost;
-    Cost        total_cost;
-
-    /*
-     * Skip if join pushdown is not enabled or this join cannot be pushed down.
-     * Note: ScyllaDB doesn't support JOINs in CQL, so we can only push down
-     * if we're essentially doing a cross-reference that can be done in separate
-     * queries. For now, we'll just check if both relations are from the same server.
-     */
-
-    /* Check that both relations are foreign tables */
-    if (outerrel->fdw_private == NULL || innerrel->fdw_private == NULL)
-        return;
-
-    fpinfo_o = (ScyllaFdwRelationInfo *) outerrel->fdw_private;
-    fpinfo_i = (ScyllaFdwRelationInfo *) innerrel->fdw_private;
-
     /*
      * ScyllaDB doesn't support JOINs at the CQL level, so we can't push down
-     * the join operation. However, we could potentially optimize for cases
-     * where we're joining on the same partition key, but that's complex.
-     * For now, just return without adding any join paths.
+     * the join operation. Just return without adding any join paths.
      */
-
-    /* 
-     * In a more sophisticated implementation, we could:
-     * 1. Check if both tables are from the same keyspace
-     * 2. Check if the join condition matches partition/clustering keys
-     * 3. Generate an efficient plan using multiple queries
-     */
-    return;
 }
 
 /*
@@ -681,10 +619,11 @@ scyllaExplainForeignScan(ForeignScanState *node, ExplainState *es)
 {
     ForeignScan *plan = castNode(ForeignScan, node->ss.ps.plan);
     List       *fdw_private = plan->fdw_private;
+    char       *sql;
 
     if (fdw_private != NIL)
     {
-        char *sql = strVal(list_nth(fdw_private, 0));
+        sql = strVal(list_nth(fdw_private, 0));
         ExplainPropertyText("ScyllaDB Query", sql, es);
     }
 }
@@ -700,16 +639,18 @@ scyllaExplainForeignModify(ModifyTableState *mtstate,
                            int subplan_index,
                            ExplainState *es)
 {
+    char       *sql;
+
     if (fdw_private != NIL)
     {
-        char *sql = strVal(list_nth(fdw_private, 0));
+        sql = strVal(list_nth(fdw_private, 0));
         ExplainPropertyText("ScyllaDB Query", sql, es);
     }
 }
 
 /*
  * scyllaAnalyzeForeignTable
- *        Collect statistics for a foreign table
+ *        Test whether analyzing this table is supported
  */
 bool
 scyllaAnalyzeForeignTable(Relation relation,
@@ -717,33 +658,36 @@ scyllaAnalyzeForeignTable(Relation relation,
                           BlockNumber *totalpages)
 {
     /*
-     * ScyllaDB doesn't provide easy access to table statistics.
-     * Return false to indicate that we can't analyze.
-     * A more sophisticated implementation could query system tables
-     * or use nodetool to estimate table size.
+     * ScyllaDB doesn't provide easy access to table statistics,
+     * so we don't support ANALYZE for now.
      */
     return false;
 }
 
 /*
  * scyllaImportForeignSchema
- *        Import tables from ScyllaDB keyspace
+ *        Import foreign schema
  */
 List *
 scyllaImportForeignSchema(ImportForeignSchemaStmt *stmt, Oid serverOid)
 {
-    List       *commands = NIL;
     ForeignServer *server;
     UserMapping *user;
+    List       *commands = NIL;
     void       *conn = NULL;
-    void       *cluster = NULL;
+    void       *result = NULL;
+    void       *iterator = NULL;
     char       *error_msg = NULL;
+    StringInfoData sql;
+    StringInfoData cmd;
     char       *host = DEFAULT_HOST;
     int         port = DEFAULT_PORT;
     char       *username = NULL;
     char       *password = NULL;
     ListCell   *lc;
-    StringInfoData sql;
+    char       *current_table = NULL;
+    char       *pk_cols = NULL;
+    bool        in_table = false;
 
     server = GetForeignServer(serverOid);
     user = GetUserMapping(GetUserId(), serverOid);
@@ -777,124 +721,166 @@ scyllaImportForeignSchema(ImportForeignSchemaStmt *stmt, Oid serverOid)
                  errmsg("could not connect to ScyllaDB: %s",
                         error_msg ? error_msg : "unknown error")));
 
-    /* Query the schema */
+    /* Query system_schema.columns for the keyspace */
     initStringInfo(&sql);
     appendStringInfo(&sql,
-                     "SELECT table_name, column_name, type "
+                     "SELECT table_name, column_name, type, kind "
                      "FROM system_schema.columns "
-                     "WHERE keyspace_name = '%s'",
+                     "WHERE keyspace_name = '%s' "
+                     "ORDER BY table_name, position",
                      stmt->remote_schema);
 
+    result = scylla_execute_query(conn, sql.data,
+                                  SCYLLA_CONSISTENCY_LOCAL_ONE, &error_msg);
+    if (result == NULL)
     {
-        void *result;
-        void *iterator;
-        char *current_table = NULL;
-        StringInfoData create_sql;
-        bool first_col = true;
+        scylla_disconnect(conn, NULL);
+        ereport(ERROR,
+                (errcode(ERRCODE_FDW_ERROR),
+                 errmsg("could not query ScyllaDB schema: %s",
+                        error_msg ? error_msg : "unknown error")));
+    }
 
-        result = scylla_execute_query(conn, sql.data,
-                                      SCYLLA_CONSISTENCY_ONE, &error_msg);
-        if (result == NULL)
-        {
-            scylla_disconnect(conn, cluster);
-            ereport(ERROR,
-                    (errcode(ERRCODE_FDW_ERROR),
-                     errmsg("failed to query schema: %s",
-                            error_msg ? error_msg : "unknown error")));
-        }
-
-        iterator = scylla_result_iterator(result);
-        initStringInfo(&create_sql);
+    iterator = scylla_result_iterator(result);
+    if (iterator != NULL)
+    {
+        initStringInfo(&cmd);
 
         while (scylla_iterator_next(iterator))
         {
-            bool is_null;
-            size_t len;
-            const char *table_name = scylla_get_string(iterator, 0, &len, &is_null);
-            const char *col_name = scylla_get_string(iterator, 1, &len, &is_null);
-            const char *col_type = scylla_get_string(iterator, 2, &len, &is_null);
-            const char *pg_type;
+            size_t      len;
+            bool        is_null;
+            const char *table_name;
+            const char *column_name;
+            const char *cql_type;
+            const char *kind;
+            char       *pg_type;
 
-            /* Map CQL types to PostgreSQL types */
-            if (strcmp(col_type, "text") == 0 || strcmp(col_type, "ascii") == 0 ||
-                strcmp(col_type, "varchar") == 0)
-                pg_type = "text";
-            else if (strcmp(col_type, "int") == 0)
-                pg_type = "integer";
-            else if (strcmp(col_type, "bigint") == 0 || strcmp(col_type, "counter") == 0)
-                pg_type = "bigint";
-            else if (strcmp(col_type, "smallint") == 0)
-                pg_type = "smallint";
-            else if (strcmp(col_type, "tinyint") == 0)
-                pg_type = "smallint";
-            else if (strcmp(col_type, "float") == 0)
-                pg_type = "real";
-            else if (strcmp(col_type, "double") == 0)
-                pg_type = "double precision";
-            else if (strcmp(col_type, "boolean") == 0)
-                pg_type = "boolean";
-            else if (strcmp(col_type, "uuid") == 0 || strcmp(col_type, "timeuuid") == 0)
-                pg_type = "uuid";
-            else if (strcmp(col_type, "timestamp") == 0)
-                pg_type = "timestamp with time zone";
-            else if (strcmp(col_type, "date") == 0)
-                pg_type = "date";
-            else if (strcmp(col_type, "time") == 0)
-                pg_type = "time";
-            else if (strcmp(col_type, "blob") == 0)
-                pg_type = "bytea";
-            else if (strcmp(col_type, "inet") == 0)
-                pg_type = "inet";
-            else if (strcmp(col_type, "decimal") == 0 || strcmp(col_type, "varint") == 0)
-                pg_type = "numeric";
-            else
-                pg_type = "text";  /* Default fallback */
+            table_name = scylla_get_string(iterator, 0, &len, &is_null);
+            if (is_null) continue;
 
+            column_name = scylla_get_string(iterator, 1, &len, &is_null);
+            if (is_null) continue;
+
+            cql_type = scylla_get_string(iterator, 2, &len, &is_null);
+            if (is_null) continue;
+
+            kind = scylla_get_string(iterator, 3, &len, &is_null);
+
+            /* Check if we've moved to a new table */
             if (current_table == NULL || strcmp(current_table, table_name) != 0)
             {
                 /* Finish previous table if any */
-                if (current_table != NULL)
+                if (in_table)
                 {
-                    appendStringInfo(&create_sql,
-                                     ") SERVER %s OPTIONS (keyspace '%s', table '%s')",
+                    /* Remove trailing comma and newline */
+                    cmd.len -= 2;
+                    cmd.data[cmd.len] = '\0';
+
+                    appendStringInfo(&cmd,
+                                     "\n) SERVER %s\n"
+                                     "OPTIONS (keyspace '%s', \"table\" '%s'",
                                      quote_identifier(server->servername),
                                      stmt->remote_schema,
                                      current_table);
-                    commands = lappend(commands, pstrdup(create_sql.data));
+
+                    if (pk_cols != NULL)
+                        appendStringInfo(&cmd, ", primary_key '%s'", pk_cols);
+
+                    appendStringInfoString(&cmd, ");");
+
+                    commands = lappend(commands, pstrdup(cmd.data));
                 }
 
                 /* Start new table */
                 current_table = pstrdup(table_name);
-                resetStringInfo(&create_sql);
-                appendStringInfo(&create_sql,
-                                 "CREATE FOREIGN TABLE %s (",
+                pk_cols = NULL;
+                resetStringInfo(&cmd);
+
+                appendStringInfo(&cmd,
+                                 "CREATE FOREIGN TABLE %s (\n",
                                  quote_identifier(table_name));
-                first_col = true;
+                in_table = true;
             }
 
-            if (!first_col)
-                appendStringInfoString(&create_sql, ", ");
-            appendStringInfo(&create_sql, "%s %s",
-                             quote_identifier(col_name), pg_type);
-            first_col = false;
+            /* Map CQL type to PostgreSQL type */
+            if (strcmp(cql_type, "uuid") == 0 || strcmp(cql_type, "timeuuid") == 0)
+                pg_type = "uuid";
+            else if (strcmp(cql_type, "text") == 0 || strcmp(cql_type, "ascii") == 0 ||
+                     strcmp(cql_type, "varchar") == 0)
+                pg_type = "text";
+            else if (strcmp(cql_type, "int") == 0)
+                pg_type = "integer";
+            else if (strcmp(cql_type, "bigint") == 0 || strcmp(cql_type, "counter") == 0)
+                pg_type = "bigint";
+            else if (strcmp(cql_type, "smallint") == 0)
+                pg_type = "smallint";
+            else if (strcmp(cql_type, "tinyint") == 0)
+                pg_type = "smallint";
+            else if (strcmp(cql_type, "float") == 0)
+                pg_type = "real";
+            else if (strcmp(cql_type, "double") == 0)
+                pg_type = "double precision";
+            else if (strcmp(cql_type, "boolean") == 0)
+                pg_type = "boolean";
+            else if (strcmp(cql_type, "timestamp") == 0)
+                pg_type = "timestamp with time zone";
+            else if (strcmp(cql_type, "date") == 0)
+                pg_type = "date";
+            else if (strcmp(cql_type, "time") == 0)
+                pg_type = "time";
+            else if (strcmp(cql_type, "blob") == 0)
+                pg_type = "bytea";
+            else if (strcmp(cql_type, "inet") == 0)
+                pg_type = "inet";
+            else if (strcmp(cql_type, "decimal") == 0 || strcmp(cql_type, "varint") == 0)
+                pg_type = "numeric";
+            else
+                pg_type = "text";  /* Default fallback */
+
+            appendStringInfo(&cmd, "    %s %s,\n",
+                             quote_identifier(column_name), pg_type);
+
+            /* Track partition key columns */
+            if (kind != NULL && strcmp(kind, "partition_key") == 0)
+            {
+                if (pk_cols == NULL)
+                    pk_cols = pstrdup(column_name);
+                else
+                {
+                    char *new_pk = psprintf("%s, %s", pk_cols, column_name);
+                    pfree(pk_cols);
+                    pk_cols = new_pk;
+                }
+            }
         }
 
         /* Finish last table */
-        if (current_table != NULL)
+        if (in_table)
         {
-            appendStringInfo(&create_sql,
-                             ") SERVER %s OPTIONS (keyspace '%s', table '%s')",
+            cmd.len -= 2;
+            cmd.data[cmd.len] = '\0';
+
+            appendStringInfo(&cmd,
+                             "\n) SERVER %s\n"
+                             "OPTIONS (keyspace '%s', \"table\" '%s'",
                              quote_identifier(server->servername),
                              stmt->remote_schema,
                              current_table);
-            commands = lappend(commands, pstrdup(create_sql.data));
+
+            if (pk_cols != NULL)
+                appendStringInfo(&cmd, ", primary_key '%s'", pk_cols);
+
+            appendStringInfoString(&cmd, ");");
+
+            commands = lappend(commands, pstrdup(cmd.data));
         }
 
         scylla_free_iterator(iterator);
-        scylla_free_result(result);
     }
 
-    scylla_disconnect(conn, cluster);
+    scylla_free_result(result);
+    scylla_disconnect(conn, NULL);
 
     return commands;
 }

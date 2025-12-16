@@ -449,11 +449,14 @@ scylla_build_update_query(Relation rel, List *target_attrs,
     StringInfoData buf;
     TupleDesc   tupdesc = RelationGetDescr(rel);
     bool        first;
+    bool        is_pk;
     int         i;
+    int         attnum;
     ForeignTable *table;
     char       *keyspace = NULL;
     char       *tablename = NULL;
     ListCell   *lc;
+    Form_pg_attribute attr;
 
     table = GetForeignTable(RelationGetRelid(rel));
     foreach(lc, table->options)
@@ -475,8 +478,8 @@ scylla_build_update_query(Relation rel, List *target_attrs,
     first = true;
     foreach_int(attnum, target_attrs)
     {
-        Form_pg_attribute attr = TupleDescAttr(tupdesc, attnum - 1);
-        bool is_pk = false;
+        attr = TupleDescAttr(tupdesc, attnum - 1);
+        is_pk = false;
 
         /* Skip primary key columns in SET clause */
         for (i = 0; i < num_pk_attrs; i++)
@@ -502,7 +505,7 @@ scylla_build_update_query(Relation rel, List *target_attrs,
     first = true;
     for (i = 0; i < num_pk_attrs; i++)
     {
-        Form_pg_attribute attr = TupleDescAttr(tupdesc, pk_attrs[i] - 1);
+        attr = TupleDescAttr(tupdesc, pk_attrs[i] - 1);
 
         if (!first)
             appendStringInfoString(&buf, " AND ");
@@ -529,6 +532,7 @@ scylla_build_delete_query(Relation rel, int *pk_attrs, int num_pk_attrs)
     char       *keyspace = NULL;
     char       *tablename = NULL;
     ListCell   *lc;
+    Form_pg_attribute attr;
 
     table = GetForeignTable(RelationGetRelid(rel));
     foreach(lc, table->options)
@@ -549,7 +553,7 @@ scylla_build_delete_query(Relation rel, int *pk_attrs, int num_pk_attrs)
     first = true;
     for (i = 0; i < num_pk_attrs; i++)
     {
-        Form_pg_attribute attr = TupleDescAttr(tupdesc, pk_attrs[i] - 1);
+        attr = TupleDescAttr(tupdesc, pk_attrs[i] - 1);
 
         if (!first)
             appendStringInfoString(&buf, " AND ");
