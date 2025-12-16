@@ -20,6 +20,15 @@
 #include "utils/rel.h"
 #include "utils/selfuncs.h"
 
+#include <math.h>
+
+/*
+ * LOG2 macro for sorting cost estimation
+ */
+#ifndef LOG2
+#define LOG2(x) (log(x) / 0.693147180559945)
+#endif
+
 /*
  * Default cost estimates for foreign table scans
  */
@@ -123,16 +132,21 @@ estimate_path_cost_size(PlannerInfo *root, RelOptInfo *baserel,
         total_cost += (ntuples - rows) * cpu_tuple_cost * 0.5;
     }
 
-    /* If sorted output is requested but we can't push down ORDER BY */
+    /* If sorted output is requested but we can't push down ORDER BY,
+     * add an estimate for local sorting cost */
     if (pathkeys != NIL)
     {
-        /* Add sorting cost */
-        Path        sort_path;
+        /* Rough estimate: sorting adds O(n log n) cost */
+        double      sort_tuples = rows;
+        Cost        sort_cost;
         
-        cost_sort(&sort_path, root, pathkeys, total_cost,
-                  rows, width, 0.0, work_mem, -1.0);
-        startup_cost = sort_path.startup_cost;
-        total_cost = sort_path.total_cost;
+        if (sort_tuples > 1.0)
+            sort_cost = sort_tuples * LOG2(sort_tuples) * cpu_operator_cost;
+        else
+            sort_cost = 0.0;
+        
+        startup_cost += sort_cost;
+        total_cost += sort_cost;
     }
 
     *p_rows = rows;

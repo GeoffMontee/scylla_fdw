@@ -121,10 +121,8 @@ extern List *scyllaImportForeignSchema(ImportForeignSchemaStmt *stmt,
                                        Oid serverOid);
 
 /*
- * Helper functions
+ * Helper functions - currently none needed
  */
-static int set_transmission_modes(void);
-static void reset_transmission_modes(int nestlevel);
 
 /*
  * Valid options for scylla_fdw.
@@ -241,14 +239,14 @@ scylla_fdw_validator(PG_FUNCTION_ARGS)
         if (!found)
         {
             StringInfoData buf;
-            struct ScyllaFdwOption *opt;
+            struct ScyllaFdwOption *opt2;
 
             initStringInfo(&buf);
-            for (opt = scylla_fdw_options; opt->keyword; opt++)
+            for (opt2 = scylla_fdw_options; opt2->keyword; opt2++)
             {
-                if (catalog == opt->context)
+                if (catalog == opt2->context)
                     appendStringInfo(&buf, "%s%s", (buf.len > 0) ? ", " : "",
-                                     opt->keyword);
+                                     opt2->keyword);
             }
 
             ereport(ERROR,
@@ -304,7 +302,6 @@ scyllaGetForeignRelSize(PlannerInfo *root,
 {
     ScyllaFdwRelationInfo *fpinfo;
     ListCell   *lc;
-    RangeTblEntry *rte = planner_rt_fetch(baserel->relid, root);
 
     /* Allocate FDW private info */
     fpinfo = (ScyllaFdwRelationInfo *) palloc0(sizeof(ScyllaFdwRelationInfo));
@@ -373,6 +370,21 @@ scyllaGetForeignPaths(PlannerInfo *root,
     ForeignPath *path;
 
     /* Create a basic foreign path */
+    /* Note: PG17 changed the signature - check PG_VERSION_NUM */
+#if PG_VERSION_NUM >= 170000
+    /* PostgreSQL 17+ signature */
+    path = create_foreignscan_path(root, baserel,
+                                   NULL,    /* default pathtarget */
+                                   fpinfo->rows,
+                                   fpinfo->startup_cost,
+                                   fpinfo->total_cost,
+                                   NIL,     /* no pathkeys */
+                                   baserel->lateral_relids,
+                                   NULL,    /* no extra plan */
+                                   NIL,     /* no fdw_restrictinfo */
+                                   NIL);    /* no fdw_private */
+#elif PG_VERSION_NUM >= 90600
+    /* PostgreSQL 9.6 to 16 signature */
     path = create_foreignscan_path(root, baserel,
                                    NULL,    /* default pathtarget */
                                    fpinfo->rows,
@@ -382,16 +394,22 @@ scyllaGetForeignPaths(PlannerInfo *root,
                                    baserel->lateral_relids,
                                    NULL,    /* no extra plan */
                                    NIL);    /* no fdw_private */
+#else
+    /* Pre-9.6 signature */
+    path = create_foreignscan_path(root, baserel,
+                                   fpinfo->rows,
+                                   fpinfo->startup_cost,
+                                   fpinfo->total_cost,
+                                   NIL,     /* no pathkeys */
+                                   baserel->lateral_relids,
+                                   NULL,    /* no extra plan */
+                                   NIL);    /* no fdw_private */
+#endif
     add_path(baserel, (Path *) path);
 
     /* If we have ORDER BY pushdown possibility, add sorted path */
     /* ScyllaDB supports ORDER BY on clustering columns */
-    if (fpinfo->clustering_key != NULL)
-    {
-        List       *useful_pathkeys = NIL;
-        /* We could add ordered paths here for clustering key columns */
-        /* For now, just use the default unsorted path */
-    }
+    /* Future enhancement: add ordered paths for clustering key columns */
 }
 
 /*
@@ -490,7 +508,9 @@ scyllaBeginForeignScan(ForeignScanState *node, int eflags)
     /* Get info about the foreign table */
     rtindex = bms_next_member(fsplan->fs_base_relids, -1);
     rte = exec_rt_fetch(rtindex, estate);
-    userid = rte->checkAsUser ? rte->checkAsUser : GetUserId();
+    
+    /* Get the user ID for connection - in PG17+, use current user */
+    userid = GetUserId();
 
     table = GetForeignTable(rte->relid);
     server = GetForeignServer(table->serverid);
@@ -716,25 +736,4 @@ scyllaEndForeignScan(ForeignScanState *node)
     /* Disconnect from ScyllaDB */
     if (fsstate->conn != NULL)
         scylla_disconnect(fsstate->conn, fsstate->cluster);
-}
-
-/*
- * set_transmission_modes
- *        Set up for data transmission to/from remote server
- */
-static int
-set_transmission_modes(void)
-{
-    /* No special modes needed for ScyllaDB, but keep for API compatibility */
-    return 0;
-}
-
-/*
- * reset_transmission_modes
- *        Reset after data transmission
- */
-static void
-reset_transmission_modes(int nestlevel)
-{
-    /* Nothing to reset for ScyllaDB */
 }
