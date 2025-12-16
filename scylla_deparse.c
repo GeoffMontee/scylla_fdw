@@ -14,6 +14,8 @@
 
 #include "access/htup_details.h"
 #include "access/sysattr.h"
+#include "access/table.h"
+#include "catalog/pg_namespace.h"
 #include "catalog/pg_operator.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_type.h"
@@ -51,9 +53,6 @@ static void deparseBoolExpr(BoolExpr *node, DeparseContext *context);
 static void deparseOpExpr(OpExpr *node, DeparseContext *context);
 static void deparseNullTest(NullTest *node, DeparseContext *context);
 static void deparseRelabelType(RelabelType *node, DeparseContext *context);
-static void deparseArrayRef(SubscriptingRef *node, DeparseContext *context);
-static void deparseFuncExpr(FuncExpr *node, DeparseContext *context);
-static bool is_builtin_operator(Oid opno);
 static bool is_pushdown_safe_type(Oid typeid);
 static const char *get_cql_operator(Oid opno);
 static char *cql_quote_literal(const char *str);
@@ -262,11 +261,8 @@ scylla_is_foreign_expr(PlannerInfo *root, RelOptInfo *baserel, Expr *expr)
             }
 
         case T_NullTest:
-            {
-                NullTest *nt = (NullTest *) expr;
-                /* ScyllaDB doesn't support IS NULL / IS NOT NULL in WHERE */
-                return false;
-            }
+            /* ScyllaDB doesn't support IS NULL / IS NOT NULL in WHERE */
+            return false;
 
         case T_RelabelType:
             {
@@ -388,10 +384,12 @@ scylla_build_insert_query(Relation rel, List *target_attrs)
     StringInfoData buf;
     TupleDesc   tupdesc = RelationGetDescr(rel);
     bool        first;
+    int         attnum;
     ForeignTable *table;
     char       *keyspace = NULL;
     char       *tablename = NULL;
     ListCell   *lc;
+    int         num_attrs;
 
     table = GetForeignTable(RelationGetRelid(rel));
     foreach(lc, table->options)
@@ -423,9 +421,10 @@ scylla_build_insert_query(Relation rel, List *target_attrs)
 
     appendStringInfoString(&buf, ") VALUES (");
 
-    /* Placeholders */
+    /* Placeholders - just need count, not the values */
+    num_attrs = list_length(target_attrs);
     first = true;
-    foreach_int(attnum, target_attrs)
+    for (attnum = 0; attnum < num_attrs; attnum++)
     {
         if (!first)
             appendStringInfoString(&buf, ", ");
@@ -476,8 +475,9 @@ scylla_build_update_query(Relation rel, List *target_attrs,
 
     /* SET clause */
     first = true;
-    foreach_int(attnum, target_attrs)
+    foreach(lc, target_attrs)
     {
+        attnum = lfirst_int(lc);
         attr = TupleDescAttr(tupdesc, attnum - 1);
         is_pk = false;
 

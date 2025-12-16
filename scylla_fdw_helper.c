@@ -187,7 +187,6 @@ scylla_get_useful_pathkeys(PlannerInfo *root, RelOptInfo *baserel)
 List *
 scylla_get_useful_ecs_for_relation(PlannerInfo *root, RelOptInfo *baserel)
 {
-    List       *dominated_ecs = NIL;
     List       *dominated_eclasses;
     ListCell   *lc;
 
@@ -400,6 +399,7 @@ parse_column_list(Relation rel, const char *collist)
     char       *str;
     char       *token;
     char       *saveptr;
+    char       *end;
 
     if (collist == NULL || collist[0] == '\0')
         return NIL;
@@ -415,7 +415,7 @@ parse_column_list(Relation rel, const char *collist)
         /* Trim whitespace */
         while (*token == ' ' || *token == '\t')
             token++;
-        char *end = token + strlen(token) - 1;
+        end = token + strlen(token) - 1;
         while (end > token && (*end == ' ' || *end == '\t'))
             *end-- = '\0';
 
