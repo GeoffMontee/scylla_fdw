@@ -21,10 +21,10 @@ REGRESS = scylla_fdw
 # ScyllaDB cpp-rs-driver configuration
 # Adjust these paths based on your installation
 SCYLLA_DRIVER_INCLUDE ?= /usr/local/include
-SCYLLA_DRIVER_LIB ?= /usr/local/lib
+SCYLLA_DRIVER_LIB ?= /usr/local/lib/aarch64-linux-gnu
 
 PG_CPPFLAGS = -I$(SCYLLA_DRIVER_INCLUDE)
-SHLIB_LINK = -L$(SCYLLA_DRIVER_LIB) -lscylla_cpp_driver -lstdc++
+SHLIB_LINK = -L$(SCYLLA_DRIVER_LIB) -lscylla-cpp-driver -lstdc++
 
 # For C++ compilation
 CXX = g++
