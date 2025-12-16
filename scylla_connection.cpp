@@ -223,10 +223,13 @@ scylla_execute_prepared(void *conn_ptr, void *prepared_ptr,
                         int consistency, char **error_msg)
 {
     ScyllaConnection* conn = (ScyllaConnection*) conn_ptr;
-    const CassPrepared* prepared = (const CassPrepared*) prepared_ptr;
     CassStatement* statement = (CassStatement*) params[0];  /* Statement is passed as first param */
     CassFuture* result_future;
     CassError rc;
+
+    /* prepared_ptr and num_params not used directly - statement already bound */
+    (void) prepared_ptr;
+    (void) num_params;
 
     *error_msg = NULL;
 
@@ -530,9 +533,8 @@ int
 scylla_get_column_type(void *result_ptr, int col)
 {
     const CassResult* result = (const CassResult*) result_ptr;
-    const CassColumnMeta* meta = cass_result_column_type(result, col);
     
-    /* This returns a CassValueType which maps to our type codes */
+    /* cass_result_column_type returns CassValueType */
     CassValueType type = cass_result_column_type(result, col);
     return (int) type;
 }

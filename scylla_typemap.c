@@ -60,8 +60,8 @@
 #define POSTGRES_EPOCH_JDATE    2451545  /* == date2j(2000, 1, 1) */
 #define UNIX_EPOCH_JDATE        2440588  /* == date2j(1970, 1, 1) */
 #define SECS_PER_DAY            86400
-#define USECS_PER_SEC           1000000LL
 #define MSECS_PER_SEC           1000LL
+/* USECS_PER_SEC is already defined in PostgreSQL headers */
 
 /*
  * scylla_convert_to_pg
@@ -164,11 +164,14 @@ scylla_convert_to_pg(void *iterator, int col, Oid pg_type,
         case BYTEAOID:
             {
                 size_t len;
-                const char *data = scylla_get_bytes(iterator, col, &len, is_null);
+                const char *data;
+                bytea *bytes;
+                
+                data = scylla_get_bytes(iterator, col, &len, is_null);
                 if (*is_null)
                     return (Datum) 0;
                 
-                bytea *bytes = (bytea *) palloc(VARHDRSZ + len);
+                bytes = (bytea *) palloc(VARHDRSZ + len);
                 SET_VARSIZE(bytes, VARHDRSZ + len);
                 memcpy(VARDATA(bytes), data, len);
                 result = PointerGetDatum(bytes);
@@ -187,12 +190,15 @@ scylla_convert_to_pg(void *iterator, int col, Oid pg_type,
         case TIMESTAMPOID:
             {
                 /* ScyllaDB timestamp is milliseconds since Unix epoch */
-                int64 ms = scylla_get_timestamp(iterator, col, is_null);
+                int64 ms;
+                int64 usec;
+                
+                ms = scylla_get_timestamp(iterator, col, is_null);
                 if (*is_null)
                     return (Datum) 0;
                 
                 /* Convert to PostgreSQL timestamp (microseconds since 2000-01-01) */
-                int64 usec = ms * 1000LL;
+                usec = ms * 1000LL;
                 /* Adjust from Unix epoch to PostgreSQL epoch */
                 usec -= ((POSTGRES_EPOCH_JDATE - UNIX_EPOCH_JDATE) * SECS_PER_DAY * USECS_PER_SEC);
                 result = TimestampGetDatum(usec);
@@ -202,11 +208,14 @@ scylla_convert_to_pg(void *iterator, int col, Oid pg_type,
         case TIMESTAMPTZOID:
             {
                 /* Same as TIMESTAMP but ScyllaDB stores in UTC */
-                int64 ms = scylla_get_timestamp(iterator, col, is_null);
+                int64 ms;
+                int64 usec;
+                
+                ms = scylla_get_timestamp(iterator, col, is_null);
                 if (*is_null)
                     return (Datum) 0;
                 
-                int64 usec = ms * 1000LL;
+                usec = ms * 1000LL;
                 usec -= ((POSTGRES_EPOCH_JDATE - UNIX_EPOCH_JDATE) * SECS_PER_DAY * USECS_PER_SEC);
                 result = TimestampTzGetDatum(usec);
             }
@@ -215,14 +224,18 @@ scylla_convert_to_pg(void *iterator, int col, Oid pg_type,
         case DATEOID:
             {
                 /* ScyllaDB date is days since 1970-01-01 with center at 2^31 */
-                int32 scylla_date = scylla_get_date(iterator, col, is_null);
+                int32 scylla_date;
+                int32 unix_days;
+                int32 pg_date;
+                
+                scylla_date = scylla_get_date(iterator, col, is_null);
                 if (*is_null)
                     return (Datum) 0;
                 
                 /* Convert to PostgreSQL date (days since 2000-01-01) */
                 /* ScyllaDB date: 2^31 = 1970-01-01, so actual days = value - 2^31 */
-                int32 unix_days = scylla_date - (1 << 31);
-                int32 pg_date = unix_days - (POSTGRES_EPOCH_JDATE - UNIX_EPOCH_JDATE);
+                unix_days = scylla_date - (1 << 31);
+                pg_date = unix_days - (POSTGRES_EPOCH_JDATE - UNIX_EPOCH_JDATE);
                 result = DateADTGetDatum(pg_date);
             }
             break;
@@ -230,12 +243,15 @@ scylla_convert_to_pg(void *iterator, int col, Oid pg_type,
         case TIMEOID:
             {
                 /* ScyllaDB time is nanoseconds since midnight */
-                int64 ns = scylla_get_time(iterator, col, is_null);
+                int64 ns;
+                int64 usec;
+                
+                ns = scylla_get_time(iterator, col, is_null);
                 if (*is_null)
                     return (Datum) 0;
                 
                 /* Convert to PostgreSQL time (microseconds since midnight) */
-                int64 usec = ns / 1000;
+                usec = ns / 1000;
                 result = TimeADTGetDatum(usec);
             }
             break;

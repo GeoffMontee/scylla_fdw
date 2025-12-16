@@ -385,11 +385,13 @@ scylla_build_insert_query(Relation rel, List *target_attrs)
     TupleDesc   tupdesc = RelationGetDescr(rel);
     bool        first;
     int         attnum;
+    int         i;
     ForeignTable *table;
     char       *keyspace = NULL;
     char       *tablename = NULL;
     ListCell   *lc;
     int         num_attrs;
+    Form_pg_attribute attr;
 
     table = GetForeignTable(RelationGetRelid(rel));
     foreach(lc, table->options)
@@ -409,9 +411,10 @@ scylla_build_insert_query(Relation rel, List *target_attrs)
 
     /* Column names */
     first = true;
-    foreach_int(attnum, target_attrs)
+    foreach(lc, target_attrs)
     {
-        Form_pg_attribute attr = TupleDescAttr(tupdesc, attnum - 1);
+        attnum = lfirst_int(lc);
+        attr = TupleDescAttr(tupdesc, attnum - 1);
 
         if (!first)
             appendStringInfoString(&buf, ", ");
@@ -424,7 +427,7 @@ scylla_build_insert_query(Relation rel, List *target_attrs)
     /* Placeholders - just need count, not the values */
     num_attrs = list_length(target_attrs);
     first = true;
-    for (attnum = 0; attnum < num_attrs; attnum++)
+    for (i = 0; i < num_attrs; i++)
     {
         if (!first)
             appendStringInfoString(&buf, ", ");
