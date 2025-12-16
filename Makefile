@@ -24,7 +24,7 @@ SCYLLA_DRIVER_INCLUDE ?= /usr/local/include
 SCYLLA_DRIVER_LIB ?= /usr/local/lib/aarch64-linux-gnu
 
 PG_CPPFLAGS = -I$(SCYLLA_DRIVER_INCLUDE)
-SHLIB_LINK = -L$(SCYLLA_DRIVER_LIB) -lscylla-cpp-driver -lstdc++
+SHLIB_LINK = -L$(SCYLLA_DRIVER_LIB) -Wl,-rpath,$(SCYLLA_DRIVER_LIB) -lscylla-cpp-driver -lstdc++
 
 # For C++ compilation
 CXX = g++
