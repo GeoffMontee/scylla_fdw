@@ -610,6 +610,7 @@ scyllaGetForeignJoinPaths(PlannerInfo *root,
      */
 }
 
+#if PG_VERSION_NUM < 180000
 /*
  * scyllaExplainForeignScan
  *        Produce extra output for EXPLAIN
@@ -647,6 +648,7 @@ scyllaExplainForeignModify(ModifyTableState *mtstate,
         ExplainPropertyText("ScyllaDB Query", sql, es);
     }
 }
+#endif
 
 /*
  * scyllaAnalyzeForeignTable
