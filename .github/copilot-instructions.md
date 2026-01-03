@@ -89,12 +89,29 @@ make check-syntax    # Syntax validation without linking
 - Always call `scylla_disconnect()` to free resources
 
 ## Common Pitfalls
-**No connection pooling at FDW level**: Each query creates a new connection in `scyllaBeginForeignScan()` / `scyllaBeginForeignModify()` and releases it in `scyllaEndForeignScan()` / `scyllaEndForeignModify()`
-- **Driver-level connection pooling**: The underlying cpp-rs-driver may maintain multiple backend connections per session (e.g., for token-aware routing), but the FDW creates one session per queryapped in `extern "C" { }` blocks
+1. **C++ code in extern blocks**: All C++ wrapper code in scylla_connection.cpp must be wrapped in `extern "C" { }` blocks
 2. **Missing PGXS variable**: Always use `USE_PGXS=1` when building (not as a contrib module)
 3. **Driver path issues**: On non-standard installations, export `SCYLLA_DRIVER_INCLUDE` and `SCYLLA_DRIVER_LIB` before `make`
 4. **Partition key requirement**: Queries without partition key equality will cause full table scans (inefficient in ScyllaDB)
 5. **Primary key for modifications**: UPDATE/DELETE fail silently or incorrectly if `primary_key` option is not set on the foreign table
+6. **PostgreSQL version compatibility**: The `create_foreignscan_path()` signature changed in PG17 and PG18. Code uses `#if PG_VERSION_NUM >= 180000` for version-specific implementations
+
+## PostgreSQL Version Compatibility
+
+The FDW supports PostgreSQL 9.6 through 18+. Key API changes to be aware of:
+
+- **PostgreSQL 18**: 
+  - `create_foreignscan_path()` signature changed:
+    - Added `disabled_nodes` parameter (5th position after `rows`)
+    - Still has `total_cost` parameter (unlike what some docs suggested)
+    - Final signature: `(root, rel, pathtarget, rows, disabled_nodes, startup_cost, total_cost, pathkeys, required_outer, fdw_outerpath, fdw_restrictinfo, fdw_private)` - 12 parameters
+  - **EXPLAIN hooks removed**: `ExplainForeignScan` and `ExplainForeignModify` callbacks were removed from the FDW API. EXPLAIN now uses a different mechanism internally.
+- **PostgreSQL 17**: 
+  - Added `fdw_restrictinfo` and `fdw_private` parameters to `create_foreignscan_path()`
+  - Signature: `(root, rel, pathtarget, rows, startup_cost, total_cost, pathkeys, lateral_relids, fdw_outerpath, fdw_restrictinfo, fdw_private)` - 11 parameters
+- **PostgreSQL 9.6+**: Modern FDW API with path-based planning
+
+When adding new features that interact with PostgreSQL APIs, check for version-specific changes and use `#if PG_VERSION_NUM` conditionals.
 
 ## Extension Installation
 
