@@ -10,8 +10,8 @@ try:
     from cassandra.auth import PlainTextAuthProvider
 except:
     print_error(
-        "cassandra-driver library not available, please install it before usage!")
-    print_error("Install with: pip install cassandra-driver")
+        "scylla-driver library not available, please install it before usage!")
+    print_error("Install with: pip install scylla-driver")
     exit(1)
 
 
