@@ -370,9 +370,21 @@ scyllaGetForeignPaths(PlannerInfo *root,
     ForeignPath *path;
 
     /* Create a basic foreign path */
-    /* Note: PG17 changed the signature - check PG_VERSION_NUM */
-#if PG_VERSION_NUM >= 170000
-    /* PostgreSQL 17+ signature */
+    /* Note: PG17 and PG18 changed the signature - check PG_VERSION_NUM */
+#if PG_VERSION_NUM >= 180000
+    /* PostgreSQL 18+ signature - added fdw_restrictinfo and fdw_private */
+    path = create_foreignscan_path(root, baserel,
+                                   NULL,    /* default pathtarget */
+                                   fpinfo->rows,
+                                   fpinfo->startup_cost,
+                                   fpinfo->total_cost,
+                                   NIL,     /* no pathkeys */
+                                   NULL,    /* required_outer */
+                                   NULL,    /* no fdw_outerpath */
+                                   NIL,     /* no fdw_restrictinfo */
+                                   NIL);    /* no fdw_private */
+#elif PG_VERSION_NUM >= 170000
+    /* PostgreSQL 17 signature */
     path = create_foreignscan_path(root, baserel,
                                    NULL,    /* default pathtarget */
                                    fpinfo->rows,
