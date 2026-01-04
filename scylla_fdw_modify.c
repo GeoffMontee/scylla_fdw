@@ -442,6 +442,74 @@ scyllaBeginForeignModify(ModifyTableState *mtstate,
     fmstate->tupdesc = RelationGetDescr(rel);
     fmstate->operation = mtstate->operation;
     fmstate->num_params = list_length(fmstate->target_attrs);
+    
+    /* For UPDATE/DELETE, we need to find junk attributes for PK columns */
+    if (fmstate->operation == CMD_UPDATE || fmstate->operation == CMD_DELETE)
+    {
+        Plan       *subplan = outerPlanState(mtstate)->plan;
+        char       *pk_str = NULL;
+        char       *str;
+        char       *token;
+        char       *saveptr;
+        char       *end;
+        int         num_pk;
+        int         idx;
+        
+        /* Get primary key column names */
+        foreach(lc, table->options)
+        {
+            DefElem *def = (DefElem *) lfirst(lc);
+            if (strcmp(def->defname, OPT_PRIMARY_KEY) == 0)
+            {
+                pk_str = defGetString(def);
+                break;
+            }
+        }
+        
+        if (pk_str == NULL)
+            ereport(ERROR,
+                    (errcode(ERRCODE_FDW_UNABLE_TO_CREATE_EXECUTION),
+                     errmsg("primary_key option required for UPDATE/DELETE")));
+        
+        /* Count PK columns */
+        num_pk = 1;
+        for (str = pk_str; *str; str++)
+            if (*str == ',') num_pk++;
+        
+        /* Allocate array for junk attribute numbers */
+        fmstate->junk_att_nums = (AttrNumber *) palloc(num_pk * sizeof(AttrNumber));
+        fmstate->num_pk_attrs = num_pk;
+        
+        /* Find junk attribute number for each PK column */
+        str = pstrdup(pk_str);
+        idx = 0;
+        for (token = strtok_r(str, ",", &saveptr);
+             token != NULL;
+             token = strtok_r(NULL, ",", &saveptr))
+        {
+            AttrNumber attnum;
+            
+            /* Trim whitespace */
+            while (*token == ' ') token++;
+            end = token + strlen(token) - 1;
+            while (end > token && *end == ' ') *end-- = '\0';
+            
+            /* Find junk attribute in targetlist */
+            attnum = ExecFindJunkAttributeInTlist(subplan->targetlist, token);
+            if (!AttributeNumberIsValid(attnum))
+                ereport(ERROR,
+                        (errcode(ERRCODE_FDW_UNABLE_TO_CREATE_EXECUTION),
+                         errmsg("primary key column \"%s\" not found in junk attributes", token)));
+            
+            fmstate->junk_att_nums[idx++] = attnum;
+        }
+        pfree(str);
+    }
+    else
+    {
+        fmstate->junk_att_nums = NULL;
+        fmstate->num_pk_attrs = 0;
+    }
 }
 
 /*
@@ -510,7 +578,9 @@ scyllaExecForeignUpdate(EState *estate,
     ScyllaFdwModifyState *fmstate = (ScyllaFdwModifyState *) resultRelInfo->ri_FdwState;
     void       *statement;
     char       *error_msg = NULL;
-    ListCell   *lc;
+    TupleDesc   tupdesc = fmstate->tupdesc;
+    int         num_non_pk;
+    int         i;
     int         pindex = 0;
 
     /* Create a statement from the prepared query */
@@ -520,15 +590,39 @@ scyllaExecForeignUpdate(EState *estate,
                 (errcode(ERRCODE_FDW_ERROR),
                  errmsg("could not create ScyllaDB statement")));
 
-    /* Bind parameters from the slot (SET clause values first, then WHERE values) */
-    foreach(lc, fmstate->target_attrs)
+    /* 
+     * Bind parameters: non-PK columns from slot (new values),
+     * then PK columns from planSlot (junk attributes for WHERE clause)
+     */
+    num_non_pk = list_length(fmstate->target_attrs) - fmstate->num_pk_attrs;
+    
+    /* Bind non-PK columns (SET clause) from slot */
+    for (i = 0; i < num_non_pk; i++)
     {
-        int         attnum = lfirst_int(lc);
-        Datum       value;
-        bool        isnull;
-
+        int attnum = list_nth_int(fmstate->target_attrs, i);
+        Datum value;
+        bool isnull;
+        
         value = slot_getattr(slot, attnum, &isnull);
-        scylla_convert_from_pg(value, TupleDescAttr(fmstate->tupdesc, attnum - 1)->atttypid,
+        scylla_convert_from_pg(value, TupleDescAttr(tupdesc, attnum - 1)->atttypid,
+                               statement, pindex, isnull);
+        pindex++;
+    }
+    
+    /* Bind PK columns (WHERE clause) from planSlot junk attributes */
+    for (i = 0; i < fmstate->num_pk_attrs; i++)
+    {
+        Datum value;
+        bool isnull;
+        int attnum;
+        
+        /* Get value from junk attribute in planSlot */
+        value = ExecGetJunkAttribute(planSlot, fmstate->junk_att_nums[i], &isnull);
+        
+        /* Get the actual attribute number to determine the type */
+        attnum = list_nth_int(fmstate->target_attrs, num_non_pk + i);
+        
+        scylla_convert_from_pg(value, TupleDescAttr(tupdesc, attnum - 1)->atttypid,
                                statement, pindex, isnull);
         pindex++;
     }
@@ -563,7 +657,8 @@ scyllaExecForeignDelete(EState *estate,
     ScyllaFdwModifyState *fmstate = (ScyllaFdwModifyState *) resultRelInfo->ri_FdwState;
     void       *statement;
     char       *error_msg = NULL;
-    ListCell   *lc;
+    TupleDesc   tupdesc = fmstate->tupdesc;
+    int         i;
     int         pindex = 0;
 
     /* Create a statement from the prepared query */
@@ -573,15 +668,20 @@ scyllaExecForeignDelete(EState *estate,
                 (errcode(ERRCODE_FDW_ERROR),
                  errmsg("could not create ScyllaDB statement")));
 
-    /* Bind primary key values from the slot */
-    foreach(lc, fmstate->target_attrs)
+    /* Bind primary key values from planSlot junk attributes */
+    for (i = 0; i < fmstate->num_pk_attrs; i++)
     {
-        int         attnum = lfirst_int(lc);
-        Datum       value;
-        bool        isnull;
-
-        value = slot_getattr(slot, attnum, &isnull);
-        scylla_convert_from_pg(value, TupleDescAttr(fmstate->tupdesc, attnum - 1)->atttypid,
+        Datum value;
+        bool isnull;
+        int attnum;
+        
+        /* Get value from junk attribute in planSlot */
+        value = ExecGetJunkAttribute(planSlot, fmstate->junk_att_nums[i], &isnull);
+        
+        /* Get the actual attribute number to determine the type */
+        attnum = list_nth_int(fmstate->target_attrs, i);
+        
+        scylla_convert_from_pg(value, TupleDescAttr(tupdesc, attnum - 1)->atttypid,
                                statement, pindex, isnull);
         pindex++;
     }

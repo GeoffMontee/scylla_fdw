@@ -188,6 +188,7 @@ typedef struct ScyllaFdwModifyState
     /* Primary key info for UPDATE/DELETE */
     AttrNumber *pk_attrs;
     int         num_pk_attrs;
+    AttrNumber *junk_att_nums;  /* Junk attribute numbers in planSlot for PK columns */
     
     /* Operation type */
     CmdType     operation;
