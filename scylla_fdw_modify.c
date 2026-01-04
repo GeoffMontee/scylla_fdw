@@ -235,6 +235,36 @@ scyllaPlanForeignModify(PlannerInfo *root,
             query = scylla_build_update_query(rel, targetAttrs, pk_attrs, num_pk_attrs);
             appendStringInfoString(&sql, query);
             pfree(query);
+
+            /* Rebuild targetAttrs to match prepared statement order:
+             * non-PK columns first (for SET), then PK columns (for WHERE) */
+            targetAttrs = NIL;
+            for (attnum = 1; attnum <= tupdesc->natts; attnum++)
+            {
+                Form_pg_attribute attr = TupleDescAttr(tupdesc, attnum - 1);
+                bool is_pk = false;
+
+                if (attr->attisdropped)
+                    continue;
+
+                /* Check if this is a PK column */
+                for (i = 0; i < num_pk_attrs; i++)
+                {
+                    if (pk_attrs[i] == attnum)
+                    {
+                        is_pk = true;
+                        break;
+                    }
+                }
+
+                /* Add non-PK columns first */
+                if (!is_pk)
+                    targetAttrs = lappend_int(targetAttrs, attnum);
+            }
+            /* Then add PK columns */
+            for (i = 0; i < num_pk_attrs; i++)
+                targetAttrs = lappend_int(targetAttrs, pk_attrs[i]);
+
             break;
 
         case CMD_DELETE:
@@ -288,6 +318,11 @@ scyllaPlanForeignModify(PlannerInfo *root,
             query = scylla_build_delete_query(rel, pk_attrs, num_pk_attrs);
             appendStringInfoString(&sql, query);
             pfree(query);
+
+            /* For DELETE, targetAttrs should contain only PK columns */
+            for (i = 0; i < num_pk_attrs; i++)
+                targetAttrs = lappend_int(targetAttrs, pk_attrs[i]);
+
             break;
 
         default:
