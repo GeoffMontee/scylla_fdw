@@ -104,12 +104,14 @@ extern void scyllaGetForeignJoinPaths(PlannerInfo *root,
                                       JoinPathExtraData *extra);
 
 /* Explain support - implemented in scylla_fdw_modify.c */
+#if PG_VERSION_NUM < 180000
 extern void scyllaExplainForeignScan(ForeignScanState *node, ExplainState *es);
 extern void scyllaExplainForeignModify(ModifyTableState *mtstate,
                                        ResultRelInfo *rinfo,
                                        List *fdw_private,
                                        int subplan_index,
                                        ExplainState *es);
+#endif
 
 /* Analyze support - implemented in scylla_fdw_modify.c */
 extern bool scyllaAnalyzeForeignTable(Relation relation,
@@ -190,8 +192,10 @@ scylla_fdw_handler(PG_FUNCTION_ARGS)
     routine->GetForeignJoinPaths = scyllaGetForeignJoinPaths;
 
     /* Explain support */
+#if PG_VERSION_NUM < 180000
     routine->ExplainForeignScan = scyllaExplainForeignScan;
     routine->ExplainForeignModify = scyllaExplainForeignModify;
+#endif
 
     /* Analyze support */
     routine->AnalyzeForeignTable = scyllaAnalyzeForeignTable;
@@ -370,9 +374,22 @@ scyllaGetForeignPaths(PlannerInfo *root,
     ForeignPath *path;
 
     /* Create a basic foreign path */
-    /* Note: PG17 changed the signature - check PG_VERSION_NUM */
-#if PG_VERSION_NUM >= 170000
-    /* PostgreSQL 17+ signature */
+    /* Note: PG17 and PG18 changed the signature - check PG_VERSION_NUM */
+#if PG_VERSION_NUM >= 180000
+    /* PostgreSQL 18+ signature - added disabled_nodes parameter */
+    path = create_foreignscan_path(root, baserel,
+                                   NULL,                    /* default pathtarget */
+                                   fpinfo->rows,            /* rows */
+                                   0,                       /* disabled_nodes */
+                                   fpinfo->startup_cost,    /* startup_cost */
+                                   fpinfo->total_cost,      /* total_cost */
+                                   NIL,                     /* pathkeys */
+                                   NULL,                    /* required_outer */
+                                   NULL,                    /* fdw_outerpath */
+                                   NIL,                     /* fdw_restrictinfo */
+                                   NIL);                    /* fdw_private */
+#elif PG_VERSION_NUM >= 170000
+    /* PostgreSQL 17 signature */
     path = create_foreignscan_path(root, baserel,
                                    NULL,    /* default pathtarget */
                                    fpinfo->rows,

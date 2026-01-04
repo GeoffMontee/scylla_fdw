@@ -22,7 +22,31 @@ allowing PostgreSQL to query ScyllaDB tables as if they were local PostgreSQL ta
 
 ### 1. Install ScyllaDB cpp-rs-driver
 
-Follow the instructions at https://github.com/scylladb/cpp-rs-driver to install
+The ScyllaDB cpp-rs-driver requires the following build dependencies:
+- Rust compiler (rustc and cargo)
+- C/C++ compiler (gcc/g++ or clang)
+- CMake
+- pkg-config
+- OpenSSL development libraries
+- Git
+- libuv
+
+**Install dependencies on Ubuntu/Debian:**
+```bash
+sudo apt-get update
+sudo apt-get install -y build-essential cmake pkg-config libssl-dev git libuv1-dev curl
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source "$HOME/.cargo/env"
+```
+
+**Install dependencies on RHEL/Fedora:**
+```bash
+sudo dnf install -y gcc gcc-c++ cmake pkg-config openssl-devel git libuv-devel
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source "$HOME/.cargo/env"
+```
+
+Follow the instructions at https://github.com/scylladb/cpp-rs-driver to build and install
 the driver. The default installation paths are:
 - Headers: `/usr/local/include`
 - Libraries: `/usr/local/lib`

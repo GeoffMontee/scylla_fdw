@@ -390,12 +390,14 @@ extern void scyllaGetForeignJoinPaths(PlannerInfo *root,
                                       RelOptInfo *innerrel,
                                       JoinType jointype,
                                       JoinPathExtraData *extra);
+#if PG_VERSION_NUM < 180000
 extern void scyllaExplainForeignScan(ForeignScanState *node, ExplainState *es);
 extern void scyllaExplainForeignModify(ModifyTableState *mtstate,
                                        ResultRelInfo *rinfo,
                                        List *fdw_private,
                                        int subplan_index,
                                        ExplainState *es);
+#endif
 extern bool scyllaAnalyzeForeignTable(Relation relation,
                                       AcquireSampleRowsFunc *func,
                                       BlockNumber *totalpages);

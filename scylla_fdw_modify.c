@@ -440,7 +440,7 @@ scyllaExecForeignInsert(EState *estate,
         bool        isnull;
 
         value = slot_getattr(slot, attnum, &isnull);
-        scylla_convert_from_pg(value, fmstate->tupdesc->attrs[attnum - 1].atttypid,
+        scylla_convert_from_pg(value, TupleDescAttr(fmstate->tupdesc, attnum - 1)->atttypid,
                                statement, pindex, isnull);
         pindex++;
     }
@@ -493,7 +493,7 @@ scyllaExecForeignUpdate(EState *estate,
         bool        isnull;
 
         value = slot_getattr(slot, attnum, &isnull);
-        scylla_convert_from_pg(value, fmstate->tupdesc->attrs[attnum - 1].atttypid,
+        scylla_convert_from_pg(value, TupleDescAttr(fmstate->tupdesc, attnum - 1)->atttypid,
                                statement, pindex, isnull);
         pindex++;
     }
@@ -546,7 +546,7 @@ scyllaExecForeignDelete(EState *estate,
         bool        isnull;
 
         value = slot_getattr(slot, attnum, &isnull);
-        scylla_convert_from_pg(value, fmstate->tupdesc->attrs[attnum - 1].atttypid,
+        scylla_convert_from_pg(value, TupleDescAttr(fmstate->tupdesc, attnum - 1)->atttypid,
                                statement, pindex, isnull);
         pindex++;
     }
@@ -610,6 +610,7 @@ scyllaGetForeignJoinPaths(PlannerInfo *root,
      */
 }
 
+#if PG_VERSION_NUM < 180000
 /*
  * scyllaExplainForeignScan
  *        Produce extra output for EXPLAIN
@@ -647,6 +648,7 @@ scyllaExplainForeignModify(ModifyTableState *mtstate,
         ExplainPropertyText("ScyllaDB Query", sql, es);
     }
 }
+#endif
 
 /*
  * scyllaAnalyzeForeignTable
