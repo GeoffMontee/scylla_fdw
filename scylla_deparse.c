@@ -57,6 +57,9 @@ static bool is_pushdown_safe_type(Oid typeid);
 static const char *get_cql_operator(Oid opno);
 static char *cql_quote_literal(const char *str);
 static char *cql_quote_identifier(const char *ident);
+static bool needs_allow_filtering(PlannerInfo *root, RelOptInfo *baserel,
+                                   ScyllaFdwRelationInfo *fpinfo,
+                                   List *remote_conds, Relation rel);
 
 /*
  * We don't use a hardcoded operator table because operator OIDs can vary.
@@ -367,6 +370,12 @@ scylla_build_select_query(PlannerInfo *root, RelOptInfo *baserel,
             deparseExpr(expr, &context);
             first = false;
         }
+    }
+
+    /* Check if we need ALLOW FILTERING */
+    if (needs_allow_filtering(root, baserel, fpinfo, remote_conds, rel))
+    {
+        appendStringInfoString(&buf, " ALLOW FILTERING");
     }
 
     table_close(rel, NoLock);
@@ -948,4 +957,141 @@ char *
 scylla_quote_identifier(const char *ident)
 {
     return cql_quote_identifier(ident);
+}
+
+/*
+ * needs_allow_filtering
+ *        Determine if ALLOW FILTERING clause is needed
+ *
+ * ALLOW FILTERING is required when:
+ * 1. No WHERE clause at all
+ * 2. Partition key columns are not all specified with = or IN operators
+ * 3. Partition key columns use non-equality operators (<, >, <=, >=, !=)
+ */
+static bool
+needs_allow_filtering(PlannerInfo *root, RelOptInfo *baserel,
+                      ScyllaFdwRelationInfo *fpinfo,
+                      List *remote_conds, Relation rel)
+{
+    TupleDesc   tupdesc = RelationGetDescr(rel);
+    char       *pk_str = fpinfo->primary_key;
+    char       *str;
+    char       *token;
+    char       *saveptr;
+    char       *end;
+    ListCell   *lc;
+    bool        all_pk_have_equality = true;
+    
+    /* If no WHERE clause, we need ALLOW FILTERING */
+    if (remote_conds == NIL)
+        return true;
+    
+    /* If no primary key defined, be conservative and add ALLOW FILTERING */
+    if (pk_str == NULL || pk_str[0] == '\0')
+        return true;
+    
+    /* Parse each partition key column and check if it has equality condition */
+    str = pstrdup(pk_str);
+    for (token = strtok_r(str, ",", &saveptr);
+         token != NULL;
+         token = strtok_r(NULL, ",", &saveptr))
+    {
+        bool        found_equality = false;
+        int         pk_attnum = 0;
+        int         i;
+        
+        /* Trim whitespace */
+        while (*token == ' ') token++;
+        end = token + strlen(token) - 1;
+        while (end > token && *end == ' ') *end-- = '\0';
+        
+        /* Find attribute number for this PK column */
+        for (i = 0; i < tupdesc->natts; i++)
+        {
+            Form_pg_attribute attr = TupleDescAttr(tupdesc, i);
+            if (strcmp(NameStr(attr->attname), token) == 0)
+            {
+                pk_attnum = i + 1;
+                break;
+            }
+        }
+        
+        if (pk_attnum == 0)
+            continue;  /* Column not found, skip */
+        
+        /* Check if this PK column appears in remote_conds with = or IN operator */
+        foreach(lc, remote_conds)
+        {
+            RestrictInfo *ri = lfirst_node(RestrictInfo, lc);
+            Expr *expr = ri->clause;
+            
+            /* Check if this is an OpExpr (= operator) */
+            if (IsA(expr, OpExpr))
+            {
+                OpExpr *opexpr = (OpExpr *) expr;
+                Expr *left;
+                Oid  opno = opexpr->opno;
+                const char *op_str = get_cql_operator(opno);
+                
+                /* Check if operator is = */
+                if (op_str != NULL && strcmp(op_str, "=") == 0)
+                {
+                    /* Check if left side is our PK column */
+                    if (list_length(opexpr->args) >= 1)
+                    {
+                        left = linitial(opexpr->args);
+                        
+                        if (IsA(left, Var))
+                        {
+                            Var *var = (Var *) left;
+                            if (var->varattno == pk_attnum &&
+                                bms_is_member(var->varno, baserel->relids))
+                            {
+                                found_equality = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            /* Check if this is a ScalarArrayOpExpr (IN operator) */
+            else if (IsA(expr, ScalarArrayOpExpr))
+            {
+                ScalarArrayOpExpr *saop = (ScalarArrayOpExpr *) expr;
+                Expr *left;
+                
+                /* ScalarArrayOpExpr with useOr=true represents IN() */
+                if (saop->useOr)
+                {
+                    /* Check if left side is our PK column */
+                    if (list_length(saop->args) >= 1)
+                    {
+                        left = linitial(saop->args);
+                        
+                        if (IsA(left, Var))
+                        {
+                            Var *var = (Var *) left;
+                            if (var->varattno == pk_attnum &&
+                                bms_is_member(var->varno, baserel->relids))
+                            {
+                                found_equality = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        /* If this PK column doesn't have equality condition, we need ALLOW FILTERING */
+        if (!found_equality)
+        {
+            all_pk_have_equality = false;
+            break;
+        }
+    }
+    
+    pfree(str);
+    
+    return !all_pk_have_equality;
 }
