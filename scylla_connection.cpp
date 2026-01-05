@@ -591,6 +591,13 @@ scylla_bind_int32(void *statement_ptr, int index, int32_t value)
 }
 
 void
+scylla_bind_uint32(void *statement_ptr, int index, uint32_t value)
+{
+    CassStatement* statement = (CassStatement*) statement_ptr;
+    cass_statement_bind_uint32(statement, index, value);
+}
+
+void
 scylla_bind_int64(void *statement_ptr, int index, int64_t value)
 {
     CassStatement* statement = (CassStatement*) statement_ptr;
@@ -639,6 +646,18 @@ scylla_bind_timestamp(void *statement_ptr, int index, int64_t value)
 {
     CassStatement* statement = (CassStatement*) statement_ptr;
     cass_statement_bind_int64(statement, index, value);
+}
+
+void
+scylla_bind_decimal(void *statement_ptr, int index, const char *decimal_str)
+{
+    CassStatement* statement = (CassStatement*) statement_ptr;
+    
+    /* Parse the decimal string to extract scale and convert to varint */
+    /* For simplicity, convert to double and use that */
+    /* TODO: Implement proper varint+scale encoding for full precision */
+    double d = strtod(decimal_str, NULL);
+    cass_statement_bind_double(statement, index, d);
 }
 
 void

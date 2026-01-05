@@ -322,9 +322,9 @@ scylla_convert_from_pg(Datum value, Oid pg_type, void *statement,
 
         case NUMERICOID:
             {
-                /* Convert numeric to string, then bind as string */
+                /* Convert numeric to string for ScyllaDB decimal type */
                 char *str = DatumGetCString(DirectFunctionCall1(numeric_out, value));
-                scylla_bind_string(statement, index, str, strlen(str));
+                scylla_bind_decimal(statement, index, str);
                 pfree(str);
             }
             break;
@@ -380,10 +380,10 @@ scylla_convert_from_pg(Datum value, Oid pg_type, void *statement,
         case DATEOID:
             {
                 DateADT pg_date = DatumGetDateADT(value);
-                /* Convert to ScyllaDB date format */
+                /* Convert to ScyllaDB date format (uint32 with 2^31 as epoch) */
                 int32 unix_days = pg_date + (POSTGRES_EPOCH_JDATE - UNIX_EPOCH_JDATE);
-                int32 scylla_date = unix_days + (1 << 31);
-                scylla_bind_int32(statement, index, scylla_date);
+                uint32_t scylla_date = (uint32_t)(unix_days + (1 << 31));
+                scylla_bind_uint32(statement, index, scylla_date);
             }
             break;
 

@@ -270,6 +270,7 @@ void       *scylla_create_statement(void *prepared);
 void        scylla_bind_null(void *statement, int index);
 void        scylla_bind_bool(void *statement, int index, bool value);
 void        scylla_bind_int32(void *statement, int index, int32_t value);
+void        scylla_bind_uint32(void *statement, int index, uint32_t value);
 void        scylla_bind_int64(void *statement, int index, int64_t value);
 void        scylla_bind_float(void *statement, int index, float value);
 void        scylla_bind_double(void *statement, int index, double value);
@@ -277,6 +278,7 @@ void        scylla_bind_string(void *statement, int index, const char *value, si
 void        scylla_bind_bytes(void *statement, int index, const char *value, size_t len);
 void        scylla_bind_uuid(void *statement, int index, const char *value);
 void        scylla_bind_timestamp(void *statement, int index, int64_t value);
+void        scylla_bind_decimal(void *statement, int index, const char *decimal_str);
 void        scylla_free_statement(void *statement);
 
 /* Utility functions */
