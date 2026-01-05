@@ -131,21 +131,17 @@ scylla_convert_to_pg(void *iterator, int col, Oid pg_type,
 
         case NUMERICOID:
             {
-                /* Try to get as string and convert */
-                size_t len;
-                const char *str;
-                char *numstr;
+                /* Get decimal from ScyllaDB and convert to PostgreSQL numeric */
+                const char *decimal_str;
                 
-                str = scylla_get_string(iterator, col, &len, is_null);
+                decimal_str = scylla_get_decimal(iterator, col, is_null);
                 if (*is_null)
                     return (Datum) 0;
                 
-                numstr = pnstrdup(str, len);
                 result = DirectFunctionCall3(numeric_in,
-                                            CStringGetDatum(numstr),
+                                            CStringGetDatum(decimal_str),
                                             ObjectIdGetDatum(InvalidOid),
                                             Int32GetDatum(typmod));
-                pfree(numstr);
             }
             break;
 
