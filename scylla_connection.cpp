@@ -518,10 +518,64 @@ scylla_get_decimal(void *iterator_ptr, int col, bool *is_null)
 
     cass_value_get_decimal(value, &varint, &varint_size, &scale);
     
-    /* For simplicity, return a placeholder - full implementation would
-       convert varint to string with proper decimal placement */
+    /* Decode varint to int64 (simplified for reasonable range) */
     static char decimal_str[64];
-    snprintf(decimal_str, sizeof(decimal_str), "0");  /* Placeholder */
+    
+    if (varint_size == 0) {
+        snprintf(decimal_str, sizeof(decimal_str), "0");
+        return decimal_str;
+    }
+    
+    /* Check if negative (high bit set) */
+    bool is_negative = (varint[0] & 0x80) != 0;
+    
+    /* Decode bytes as big-endian integer */
+    int64_t unscaled_value = 0;
+    
+    if (is_negative) {
+        /* Two's complement decoding */
+        for (size_t i = 0; i < varint_size && i < 8; i++) {
+            unscaled_value = (unscaled_value << 8) | (~varint[i] & 0xFF);
+        }
+        unscaled_value = -(unscaled_value + 1);
+    } else {
+        /* Positive number */
+        for (size_t i = 0; i < varint_size && i < 8; i++) {
+            unscaled_value = (unscaled_value << 8) | varint[i];
+        }
+    }
+    
+    /* Format with decimal point at the right place */
+    if (scale == 0) {
+        snprintf(decimal_str, sizeof(decimal_str), "%lld", (long long)unscaled_value);
+    } else {
+        /* Insert decimal point */
+        char temp[64];
+        snprintf(temp, sizeof(temp), "%lld", (long long)(unscaled_value < 0 ? -unscaled_value : unscaled_value));
+        int len = strlen(temp);
+        
+        if (scale >= len) {
+            /* Need leading zeros: 0.00123 */
+            char *p = decimal_str;
+            if (unscaled_value < 0) *p++ = '-';
+            *p++ = '0';
+            *p++ = '.';
+            for (int i = 0; i < scale - len; i++) {
+                *p++ = '0';
+            }
+            strcpy(p, temp);
+        } else {
+            /* Insert decimal point in the middle: 123.45 */
+            int int_digits = len - scale;
+            char *p = decimal_str;
+            if (unscaled_value < 0) *p++ = '-';
+            strncpy(p, temp, int_digits);
+            p += int_digits;
+            *p++ = '.';
+            strcpy(p, temp + int_digits);
+        }
+    }
+    
     return decimal_str;
 }
 
