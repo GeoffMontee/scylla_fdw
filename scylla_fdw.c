@@ -613,8 +613,9 @@ scyllaBeginForeignScan(ForeignScanState *node, int eflags)
             fsstate->col_mapping[i] = -1;
 
         i = 0;
-        foreach_int(attnum, retrieved_attrs)
+        foreach(lc, retrieved_attrs)
         {
+            int attnum = lfirst_int(lc);
             if (attnum > 0 && attnum <= natts)
                 fsstate->col_mapping[attnum - 1] = i;
             i++;
