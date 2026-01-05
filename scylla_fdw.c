@@ -605,6 +605,7 @@ scyllaBeginForeignScan(ForeignScanState *node, int eflags)
         List *retrieved_attrs = (List *) list_nth(fsplan->fdw_private, 1);
         int natts = fsstate->tupdesc->natts;
         int i;
+        ListCell *lc;
 
         fsstate->num_cols = list_length(retrieved_attrs);
         fsstate->col_mapping = (int *) palloc(natts * sizeof(int));
