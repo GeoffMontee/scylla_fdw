@@ -1022,13 +1022,8 @@ needs_allow_filtering(PlannerInfo *root, RelOptInfo *baserel,
         /* Check if this PK column appears in remote_conds with = or IN operator */
         foreach(lc, remote_conds)
         {
-            RestrictInfo *ri = lfirst_node(RestrictInfo, lc);
-            Expr *expr;
+            Expr *expr = (Expr *) lfirst(lc);
             
-            if (ri == NULL)
-                continue;
-            
-            expr = ri->clause;
             if (expr == NULL)
                 continue;
             
