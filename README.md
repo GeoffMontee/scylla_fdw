@@ -222,6 +222,25 @@ WHERE user_id = '550e8400-e29b-41d4-a716-446655440000';
 EXPLAIN (VERBOSE) SELECT * FROM users WHERE user_id = 'some-uuid';
 ```
 
+## Migrating from PostgreSQL to ScyllaDB
+
+For a complete migration from PostgreSQL to ScyllaDB, you can use the [postgres-to-scylla-migration](https://github.com/GeoffMontee/postgres-to-scylla-migration) toolkit. This toolkit:
+
+- **Converts PostgreSQL schemas to CQL** - Automatically translates table definitions, data types, and constraints
+- **Migrates data** - Efficiently copies data from PostgreSQL to ScyllaDB
+- **Handles type mapping** - Properly converts PostgreSQL types to compatible CQL types
+- **Supports incremental migration** - Can migrate specific tables or schemas
+
+### Basic Migration Workflow
+
+1. **Install the migration toolkit** (see the [repo documentation](https://github.com/GeoffMontee/postgres-to-scylla-migration))
+2. **Convert your schema** to CQL and create tables in ScyllaDB
+3. **Migrate data** using the toolkit's data migration tools
+4. **Set up scylla_fdw** to access ScyllaDB tables from PostgreSQL
+5. **Test and validate** your migrated data
+
+For detailed instructions, examples, and best practices, visit the [migration toolkit repository](https://github.com/GeoffMontee/postgres-to-scylla-migration).
+
 ## Limitations
 
 1. **No JOIN Pushdown**: ScyllaDB doesn't support JOINs in CQL, so joins between
