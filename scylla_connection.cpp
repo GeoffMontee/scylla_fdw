@@ -653,11 +653,83 @@ scylla_bind_decimal(void *statement_ptr, int index, const char *decimal_str)
 {
     CassStatement* statement = (CassStatement*) statement_ptr;
     
-    /* Parse the decimal string to extract scale and convert to varint */
-    /* For simplicity, convert to double and use that */
-    /* TODO: Implement proper varint+scale encoding for full precision */
-    double d = strtod(decimal_str, NULL);
-    cass_statement_bind_double(statement, index, d);
+    /* Parse decimal string to extract scale and unscaled value */
+    /* For example: "195.00" -> scale=2, unscaled=19500 */
+    const char *dot = strchr(decimal_str, '.');
+    cass_int32_t scale = 0;
+    std::string unscaled_str = decimal_str;
+    
+    if (dot != NULL) {
+        /* Calculate scale (number of digits after decimal point) */
+        scale = strlen(dot + 1);
+        /* Remove the decimal point to get unscaled value */
+        std::string before_dot(decimal_str, dot - decimal_str);
+        std::string after_dot(dot + 1);
+        unscaled_str = before_dot + after_dot;
+    }
+    
+    /* Handle negative numbers */
+    bool is_negative = false;
+    if (unscaled_str[0] == '-') {
+        is_negative = true;
+        unscaled_str = unscaled_str.substr(1);
+    }
+    
+    /* Convert unscaled value string to int64 */
+    int64_t unscaled_value = strtoll(unscaled_str.c_str(), NULL, 10);
+    if (is_negative) {
+        unscaled_value = -unscaled_value;
+    }
+    
+    /* Encode as varint bytes (simple implementation for int64 range) */
+    /* This is a simplified big-endian encoding */
+    cass_byte_t varint[9];  /* Max 9 bytes for int64 */
+    int varint_size = 0;
+    
+    if (unscaled_value == 0) {
+        varint[0] = 0;
+        varint_size = 1;
+    } else {
+        uint64_t abs_val = (unscaled_value < 0) ? -unscaled_value : unscaled_value;
+        bool is_neg = (unscaled_value < 0);
+        
+        /* Encode in big-endian */
+        varint_size = 8;
+        for (int i = 7; i >= 0; i--) {
+            varint[7 - i] = (abs_val >> (i * 8)) & 0xFF;
+        }
+        
+        /* Remove leading zeros */
+        int start = 0;
+        while (start < 7 && varint[start] == 0) {
+            start++;
+        }
+        varint_size = 8 - start;
+        
+        /* Shift bytes to start */
+        if (start > 0) {
+            for (int i = 0; i < varint_size; i++) {
+                varint[i] = varint[start + i];
+            }
+        }
+        
+        /* Handle two's complement for negative numbers */
+        if (is_neg) {
+            /* Two's complement: invert bits and add 1 */
+            for (int i = 0; i < varint_size; i++) {
+                varint[i] = ~varint[i];
+            }
+            /* Add 1 */
+            int carry = 1;
+            for (int i = varint_size - 1; i >= 0 && carry; i--) {
+                int sum = varint[i] + carry;
+                varint[i] = sum & 0xFF;
+                carry = sum >> 8;
+            }
+        }
+    }
+    
+    cass_statement_bind_decimal(statement, index, varint, varint_size, scale);
 }
 
 void
