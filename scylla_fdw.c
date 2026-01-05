@@ -523,7 +523,11 @@ scyllaBeginForeignScan(ForeignScanState *node, int eflags)
     node->fdw_state = (void *) fsstate;
 
     /* Get info about the foreign table */
+#if PG_VERSION_NUM >= 160000
     rtindex = bms_next_member(fsplan->fs_base_relids, -1);
+#else
+    rtindex = bms_next_member(fsplan->fs_relids, -1);
+#endif
     rte = exec_rt_fetch(rtindex, estate);
     
     /* Get the user ID for connection - in PG17+, use current user */
