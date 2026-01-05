@@ -1023,7 +1023,14 @@ needs_allow_filtering(PlannerInfo *root, RelOptInfo *baserel,
         foreach(lc, remote_conds)
         {
             RestrictInfo *ri = lfirst_node(RestrictInfo, lc);
-            Expr *expr = ri->clause;
+            Expr *expr;
+            
+            if (ri == NULL)
+                continue;
+            
+            expr = ri->clause;
+            if (expr == NULL)
+                continue;
             
             /* Check if this is an OpExpr (= operator) */
             if (IsA(expr, OpExpr))
