@@ -90,11 +90,13 @@ make check-syntax    # Syntax validation without linking
 
 ## Common Pitfalls
 1. **C++ code in extern blocks**: All C++ wrapper code in scylla_connection.cpp must be wrapped in `extern "C" { }` blocks
-2. **Missing PGXS variable**: Always use `USE_PGXS=1` when building (not as a contrib module)
-3. **Driver path issues**: On non-standard installations, export `SCYLLA_DRIVER_INCLUDE` and `SCYLLA_DRIVER_LIB` before `make`
-4. **Partition key requirement**: Queries without partition key equality will cause full table scans (inefficient in ScyllaDB)
-5. **Primary key for modifications**: UPDATE/DELETE fail silently or incorrectly if `primary_key` option is not set on the foreign table
-6. **PostgreSQL version compatibility**: The `create_foreignscan_path()` signature changed in PG17 and PG18. Code uses `#if PG_VERSION_NUM >= 180000` for version-specific implementations
+2. **No connection pooling at FDW level**: Each query creates a new connection in `scyllaBeginForeignScan()` / `scyllaBeginForeignModify()` and releases it in `scyllaEndForeignScan()` / `scyllaEndForeignModify()`
+3. **Driver-level connection pooling**: The underlying cpp-rs-driver may maintain multiple backend connections per session (e.g., for token-aware routing), but the FDW creates one session per queryapped in `extern "C" { }` blocks
+4. **Missing PGXS variable**: Always use `USE_PGXS=1` when building (not as a contrib module)
+5. **Driver path issues**: On non-standard installations, export `SCYLLA_DRIVER_INCLUDE` and `SCYLLA_DRIVER_LIB` before `make`
+6. **Partition key requirement**: Queries without partition key equality will cause full table scans (inefficient in ScyllaDB)
+7. **Primary key for modifications**: UPDATE/DELETE fail silently or incorrectly if `primary_key` option is not set on the foreign table
+8. **PostgreSQL version compatibility**: The `create_foreignscan_path()` signature changed in PG17 and PG18. Code uses `#if PG_VERSION_NUM >= 180000` for version-specific implementations
 
 ## PostgreSQL Version Compatibility
 
@@ -142,3 +144,123 @@ After building, users must:
 5. **User-Defined Types** (map CQL UDTs to PostgreSQL composite types)
 6. **Vector search** (add support for ANN queries via CQL extensions)
 
+## Test Suite
+
+### Overview
+The test suite in [tests/](../tests/) was originally ported from [tds_fdw](https://github.com/tds-fdw/tds_fdw), adapted from MS SQL Server/Sybase tests to work with ScyllaDB/Cassandra. It provides comprehensive testing for both ScyllaDB schema creation and PostgreSQL FDW operations.
+
+### Test Structure
+- **tests/scylla/**: CQL test files (`.cql` + `.json`) for creating keyspaces and tables in ScyllaDB
+- **tests/postgresql/**: SQL test files (`.sql` + `.json`) for testing FDW operations from PostgreSQL
+- **tests/lib/**: Python library for test execution (messages, test runner)
+
+### Python Dependencies
+
+#### For ScyllaDB Tests (scylla-tests.py)
+```bash
+# Install Scylla Python driver
+pip install scylla-driver
+```
+
+#### For PostgreSQL Tests (postgresql-tests.py)
+```bash
+# Install PostgreSQL Python adapter
+pip install psycopg2
+# or psycopg2-binary if you don't want to compile
+pip install psycopg2-binary
+```
+
+### Running Tests
+
+#### 1. Run ScyllaDB Setup Tests
+Creates keyspaces and tables in ScyllaDB for testing:
+
+```bash
+cd tests/
+
+# With authentication
+python scylla-tests.py \
+  --host scylla.example.com \
+  --port 9042 \
+  --keyspace scylla_fdw_tests \
+  --username cassandra \
+  --password cassandra
+
+# Without authentication (default ScyllaDB setup)
+python scylla-tests.py \
+  --host localhost \
+  --port 9042 \
+  --keyspace scylla_fdw_tests
+```
+
+#### 2. Run PostgreSQL FDW Tests
+Tests scylla_fdw functionality from PostgreSQL:
+
+```bash
+cd tests/
+
+# Full test run
+python postgresql-tests.py \
+  --postgres_server localhost \
+  --postgres_port 5432 \
+  --postgres_database testdb \
+  --postgres_schema scylla_fdw_tests \
+  --postgres_username pguser \
+  --postgres_password pgpass \
+  --scylla_host scylla.example.com \
+  --scylla_port 9042 \
+  --scylla_keyspace scylla_fdw_tests \
+  --scylla_username cassandra \
+  --scylla_password cassandra
+
+# With debugging (shows backend PID, SQL queries, and logs on failure)
+python postgresql-tests.py \
+  --postgres_server localhost \
+  --postgres_port 5432 \
+  --postgres_database testdb \
+  --postgres_schema scylla_fdw_tests \
+  --postgres_username pguser \
+  --postgres_password pgpass \
+  --scylla_host localhost \
+  --scylla_port 9042 \
+  --scylla_keyspace scylla_fdw_tests \
+  --debugging \
+  --postgres_min_messages DEBUG1
+```
+
+### Test Options
+
+#### scylla-tests.py
+- `--host`: ScyllaDB contact point (required)
+- `--port`: Native transport port (default: 9042)
+- `--keyspace`: Keyspace name to create/use (required)
+- `--username`: Authentication username (optional)
+- `--password`: Authentication password (optional)
+- `--ssl`: Enable SSL/TLS connection (flag)
+
+#### postgresql-tests.py
+- `--postgres_server`, `--postgres_port`, `--postgres_database`: PostgreSQL connection details
+- `--postgres_schema`: Schema to create for foreign tables
+- `--postgres_username`, `--postgres_password`: PostgreSQL credentials
+- `--scylla_host`, `--scylla_port`: ScyllaDB connection details
+- `--scylla_keyspace`: Keyspace to import as foreign schema
+- `--scylla_username`, `--scylla_password`: ScyllaDB credentials (optional)
+- `--debugging`: Pause after connection, show queries, print logs on failure
+- `--unattended_debugging`: Like debugging but no pause (for CI)
+- `--postgres_min_messages`: PostgreSQL log level (DEBUG1-5, LOG, NOTICE, WARNING, ERROR)
+
+### Test Coverage
+- **Data type tests**: tinyint, smallint, int, bigint, float, double, decimal, text, blob, date, time, timestamp
+- **IMPORT FOREIGN SCHEMA**: Automatic table discovery from ScyllaDB keyspace
+- **Write operations**: INSERT, UPDATE, DELETE (tests 050+)
+- **NULL handling**: NULL values in various data types
+- **Edge cases**: Min/max values for integer types, date/time edge cases
+
+### Adding New Tests
+1. Create `.cql` and `.json` files in `tests/tests/scylla/` for ScyllaDB setup
+2. Create `.sql` and `.json` files in `tests/tests/postgresql/` for FDW operations
+3. Use numbered prefixes (e.g., `060_`) to control execution order
+4. JSON metadata includes test description and version requirements
+5. Use placeholders: `@KEYSPACE` (ScyllaDB), `@PSCHEMANAME`, `@SHOST`, etc. (PostgreSQL)
+
+See [tests/README.md](../tests/README.md) for detailed documentation on writing tests.
