@@ -1,8 +1,8 @@
 ScyllaDB Foreign Data Wrapper for PostgreSQL
 
-Copyright (c) 2025, Geoff Montee
+Copyright (c) 2025-2026, Geoff Montee
 
-Portions Copyright (c) 1996-2025, The PostgreSQL Global Development Group
+Portions Copyright (c) 1996-2026, The PostgreSQL Global Development Group
 
 Portions Copyright (c) 1994, The Regents of the University of California
 
