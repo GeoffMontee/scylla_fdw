@@ -211,6 +211,27 @@ scyllaPlanForeignModify(PlannerInfo *root,
             }
         }
         
+        /* If no columns found with offset, try without offset (PG18 behavior) */
+        if (list_length(targetAttrs) == 0 && updatedCols != NULL)
+        {
+            elog(DEBUG1, "scylla_fdw: trying alternative bit indexing (attnum-1)");
+            for (attnum = 1; attnum <= tupdesc->natts; attnum++)
+            {
+                Form_pg_attribute attr = TupleDescAttr(tupdesc, attnum - 1);
+
+                elog(DEBUG1, "scylla_fdw: checking column %s with bit %d",
+                     NameStr(attr->attname), attnum - 1);
+
+                if (!attr->attisdropped &&
+                    bms_is_member(attnum - 1, updatedCols))
+                {
+                    elog(DEBUG1, "scylla_fdw: adding column %s (attnum=%d) to UPDATE SET clause",
+                         NameStr(attr->attname), attnum);
+                    targetAttrs = lappend_int(targetAttrs, attnum);
+                }
+            }
+        }
+        
         elog(DEBUG1, "scylla_fdw: UPDATE will modify %d column(s)", list_length(targetAttrs));
     }
 
