@@ -164,12 +164,14 @@ scyllaPlanForeignModify(PlannerInfo *root,
     }
     else if (operation == CMD_UPDATE)
     {
-        /* For UPDATE, include all non-dropped columns */
+        /* For UPDATE, include only columns being updated */
         for (attnum = 1; attnum <= tupdesc->natts; attnum++)
         {
             Form_pg_attribute attr = TupleDescAttr(tupdesc, attnum - 1);
 
-            if (!attr->attisdropped)
+            if (!attr->attisdropped &&
+                bms_is_member(attnum - FirstLowInvalidHeapAttributeNumber,
+                              rte->updatedCols))
                 targetAttrs = lappend_int(targetAttrs, attnum);
         }
     }
