@@ -307,6 +307,8 @@ scyllaGetForeignRelSize(PlannerInfo *root,
     ScyllaFdwRelationInfo *fpinfo;
     ListCell   *lc;
 
+    elog(DEBUG1, "scylla_fdw: planning foreign table scan for relation %u", foreigntableid);
+
     /* Allocate FDW private info */
     fpinfo = (ScyllaFdwRelationInfo *) palloc0(sizeof(ScyllaFdwRelationInfo));
     baserel->fdw_private = (void *) fpinfo;
@@ -358,6 +360,8 @@ scyllaGetForeignRelSize(PlannerInfo *root,
     baserel->rows = fpinfo->rows;
     baserel->tuples = fpinfo->rows;
 
+    elog(DEBUG1, "scylla_fdw: estimated rows=%.0f, width=%d", fpinfo->rows, fpinfo->width);
+
     table_close(fpinfo->rel, NoLock);
 }
 
@@ -372,6 +376,8 @@ scyllaGetForeignPaths(PlannerInfo *root,
 {
     ScyllaFdwRelationInfo *fpinfo = (ScyllaFdwRelationInfo *) baserel->fdw_private;
     ForeignPath *path;
+
+    elog(DEBUG1, "scylla_fdw: creating foreign paths for relation %u", foreigntableid);
 
     /* Create a basic foreign path */
     /* Note: PG17 and PG18 changed the signature - check PG_VERSION_NUM */
@@ -471,6 +477,7 @@ scyllaGetForeignPlan(PlannerInfo *root,
                                                 tlist, remote_exprs,
                                                 &retrieved_attrs);
         appendStringInfoString(&sql, query);
+        elog(DEBUG1, "scylla_fdw: generated CQL query: %s", query);
         pfree(query);
     }
 
@@ -581,6 +588,7 @@ scyllaBeginForeignScan(ForeignScanState *node, int eflags)
         }
 
         /* Connect to ScyllaDB */
+        elog(DEBUG1, "scylla_fdw: connecting to ScyllaDB at %s:%d", host, port);
         fsstate->conn = scylla_connect(host, port, username, password,
                                        connect_timeout, use_ssl,
                                        ssl_cert, ssl_key, ssl_ca,
@@ -590,10 +598,14 @@ scyllaBeginForeignScan(ForeignScanState *node, int eflags)
                     (errcode(ERRCODE_FDW_UNABLE_TO_ESTABLISH_CONNECTION),
                      errmsg("could not connect to ScyllaDB: %s",
                             error_msg ? error_msg : "unknown error")));
+        elog(DEBUG1, "scylla_fdw: successfully connected to ScyllaDB");
     }
 
     /* Get the CQL query from fdw_private */
     fsstate->query = strVal(list_nth(fsplan->fdw_private, 0));
+    ereport(NOTICE,
+            (errmsg("scylla_fdw: executing remote query"),
+             errdetail("%s", fsstate->query)));
 
     /* Initialize other fields */
     fsstate->rel = node->ss.ss_currentRelation;
@@ -643,6 +655,8 @@ scyllaIterateForeignScan(ForeignScanState *node)
     if (fsstate->result == NULL && !fsstate->eof_reached)
     {
         int consistency = SCYLLA_CONSISTENCY_LOCAL_QUORUM; /* Default */
+
+        elog(DEBUG1, "scylla_fdw: executing query with consistency level %d", consistency);
 
         fsstate->result = scylla_execute_query(fsstate->conn, fsstate->query,
                                                consistency, &error_msg);
@@ -707,6 +721,9 @@ scyllaIterateForeignScan(ForeignScanState *node)
     ExecStoreVirtualTuple(slot);
     fsstate->fetch_ct++;
 
+    if (fsstate->fetch_ct % 100 == 0)
+        elog(DEBUG1, "scylla_fdw: fetched %ld rows so far", fsstate->fetch_ct);
+
     return slot;
 }
 
@@ -718,6 +735,8 @@ static void
 scyllaReScanForeignScan(ForeignScanState *node)
 {
     ScyllaFdwScanState *fsstate = (ScyllaFdwScanState *) node->fdw_state;
+
+    elog(DEBUG1, "scylla_fdw: rescanning foreign table");
 
     /* Release previous results */
     if (fsstate->iterator != NULL)
@@ -747,6 +766,8 @@ scyllaEndForeignScan(ForeignScanState *node)
 
     if (fsstate == NULL)
         return;
+
+    elog(DEBUG1, "scylla_fdw: ending foreign table scan, fetched %ld rows total", fsstate->fetch_ct);
 
     /* Release iterator and result */
     if (fsstate->iterator != NULL)
