@@ -183,14 +183,27 @@ scyllaPlanForeignModify(PlannerInfo *root,
         elog(DEBUG1, "scylla_fdw: updatedCols is %s (subplan_index=%d)",
              updatedCols ? "set" : "NULL", subplan_index);
 
+        if (updatedCols != NULL)
+        {
+            /* Debug: show what's in the bitmapset */
+            int x = -1;
+            while ((x = bms_next_member(updatedCols, x)) >= 0)
+            {
+                elog(DEBUG1, "scylla_fdw: updatedCols contains bit %d", x);
+            }
+        }
+
         for (attnum = 1; attnum <= tupdesc->natts; attnum++)
         {
             Form_pg_attribute attr = TupleDescAttr(tupdesc, attnum - 1);
+            int bit_index = attnum - FirstLowInvalidHeapAttributeNumber;
+
+            elog(DEBUG1, "scylla_fdw: checking column %s (attnum=%d, bit_index=%d, dropped=%d)",
+                 NameStr(attr->attname), attnum, bit_index, attr->attisdropped);
 
             if (!attr->attisdropped &&
                 updatedCols != NULL &&
-                bms_is_member(attnum - FirstLowInvalidHeapAttributeNumber,
-                              updatedCols))
+                bms_is_member(bit_index, updatedCols))
             {
                 elog(DEBUG1, "scylla_fdw: adding column %s (attnum=%d) to UPDATE SET clause",
                      NameStr(attr->attname), attnum);
