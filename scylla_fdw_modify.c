@@ -180,15 +180,25 @@ scyllaPlanForeignModify(PlannerInfo *root,
         Bitmapset *updatedCols = rte->updatedCols;
 #endif
 
+        elog(DEBUG1, "scylla_fdw: updatedCols is %s (subplan_index=%d)",
+             updatedCols ? "set" : "NULL", subplan_index);
+
         for (attnum = 1; attnum <= tupdesc->natts; attnum++)
         {
             Form_pg_attribute attr = TupleDescAttr(tupdesc, attnum - 1);
 
             if (!attr->attisdropped &&
+                updatedCols != NULL &&
                 bms_is_member(attnum - FirstLowInvalidHeapAttributeNumber,
                               updatedCols))
+            {
+                elog(DEBUG1, "scylla_fdw: adding column %s (attnum=%d) to UPDATE SET clause",
+                     NameStr(attr->attname), attnum);
                 targetAttrs = lappend_int(targetAttrs, attnum);
+            }
         }
+        
+        elog(DEBUG1, "scylla_fdw: UPDATE will modify %d column(s)", list_length(targetAttrs));
     }
 
     /*
@@ -400,6 +410,9 @@ scyllaBeginForeignModify(ModifyTableState *mtstate,
     /* Allocate and initialize modify state */
     fmstate = (ScyllaFdwModifyState *) palloc0(sizeof(ScyllaFdwModifyState));
     resultRelInfo->ri_FdwState = fmstate;
+    
+    /* Set operation early so it can be used in log messages */
+    fmstate->operation = mtstate->operation;
 
     /* Get the user ID for connection */
     userid = GetUserId();
@@ -476,7 +489,6 @@ scyllaBeginForeignModify(ModifyTableState *mtstate,
     /* Store additional state */
     fmstate->rel = rel;
     fmstate->tupdesc = RelationGetDescr(rel);
-    fmstate->operation = mtstate->operation;
     fmstate->num_params = list_length(fmstate->target_attrs);
     
     /* For UPDATE/DELETE, we need to find junk attributes for PK columns */
