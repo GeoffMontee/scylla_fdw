@@ -165,13 +165,22 @@ scyllaPlanForeignModify(PlannerInfo *root,
     else if (operation == CMD_UPDATE)
     {
         /* For UPDATE, include only columns being updated */
+#if PG_VERSION_NUM >= 180000
+        /* In PG18+, updatedCols is in the ModifyTable plan node */
+        Bitmapset *updatedCols = plan->updateColnosLists ?
+            (Bitmapset *) list_nth(plan->updateColnosLists, subplan_index) : NULL;
+#else
+        /* In PG17 and earlier, updatedCols is in RangeTblEntry */
+        Bitmapset *updatedCols = rte->updatedCols;
+#endif
+
         for (attnum = 1; attnum <= tupdesc->natts; attnum++)
         {
             Form_pg_attribute attr = TupleDescAttr(tupdesc, attnum - 1);
 
             if (!attr->attisdropped &&
                 bms_is_member(attnum - FirstLowInvalidHeapAttributeNumber,
-                              rte->updatedCols))
+                              updatedCols))
                 targetAttrs = lappend_int(targetAttrs, attnum);
         }
     }

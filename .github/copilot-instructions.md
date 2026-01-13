@@ -106,9 +106,11 @@ The FDW supports PostgreSQL 9.6 through 18+. Key API changes to be aware of:
     - Still has `total_cost` parameter (unlike what some docs suggested)
     - Final signature: `(root, rel, pathtarget, rows, disabled_nodes, startup_cost, total_cost, pathkeys, required_outer, fdw_outerpath, fdw_restrictinfo, fdw_private)` - 12 parameters
   - **EXPLAIN hooks removed**: `ExplainForeignScan` and `ExplainForeignModify` callbacks were removed from the FDW API. EXPLAIN now uses a different mechanism internally.
+  - **UPDATE column tracking moved**: `updatedCols` moved from `RangeTblEntry` to `ModifyTable->updateColnosLists` (list of bitmapsets, one per subplan). Use `list_nth(plan->updateColnosLists, subplan_index)` to get the updated columns for a specific subplan.
 - **PostgreSQL 17**: 
   - Added `fdw_restrictinfo` and `fdw_private` parameters to `create_foreignscan_path()`
   - Signature: `(root, rel, pathtarget, rows, startup_cost, total_cost, pathkeys, lateral_relids, fdw_outerpath, fdw_restrictinfo, fdw_private)` - 11 parameters
+  - `updatedCols` still in `RangeTblEntry` (accessed via `rte->updatedCols`)
 - **PostgreSQL 9.6+**: Modern FDW API with path-based planning
 
 When adding new features that interact with PostgreSQL APIs, check for version-specific changes and use `#if PG_VERSION_NUM` conditionals.
