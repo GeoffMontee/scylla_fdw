@@ -144,6 +144,12 @@ scyllaPlanForeignModify(PlannerInfo *root,
     int         idx;
     int         i;
 
+    elog(DEBUG1, "scylla_fdw: planning %s operation for relation %u",
+         operation == CMD_INSERT ? "INSERT" :
+         operation == CMD_UPDATE ? "UPDATE" :
+         operation == CMD_DELETE ? "DELETE" : "UNKNOWN",
+         rte->relid);
+
     initStringInfo(&sql);
 
     /* Open the relation to get column info */
@@ -343,6 +349,12 @@ scyllaPlanForeignModify(PlannerInfo *root,
 
     table_close(rel, NoLock);
 
+    elog(DEBUG1, "scylla_fdw: generated CQL %s query: %s",
+         operation == CMD_INSERT ? "INSERT" :
+         operation == CMD_UPDATE ? "UPDATE" :
+         operation == CMD_DELETE ? "DELETE" : "UNKNOWN",
+         sql.data);
+
     /*
      * Return the command string as fdw_private list for use in executor.
      * Items:
@@ -426,6 +438,11 @@ scyllaBeginForeignModify(ModifyTableState *mtstate,
     }
 
     /* Connect to ScyllaDB */
+    elog(DEBUG1, "scylla_fdw: connecting to ScyllaDB at %s:%d for %s operation",
+         host, port,
+         fmstate->operation == CMD_INSERT ? "INSERT" :
+         fmstate->operation == CMD_UPDATE ? "UPDATE" :
+         fmstate->operation == CMD_DELETE ? "DELETE" : "UNKNOWN");
     fmstate->conn = scylla_connect(host, port, username, password,
                                    connect_timeout, use_ssl,
                                    ssl_cert, ssl_key, ssl_ca,
@@ -435,10 +452,18 @@ scyllaBeginForeignModify(ModifyTableState *mtstate,
                 (errcode(ERRCODE_FDW_UNABLE_TO_ESTABLISH_CONNECTION),
                  errmsg("could not connect to ScyllaDB: %s",
                         error_msg ? error_msg : "unknown error")));
+    elog(DEBUG1, "scylla_fdw: successfully connected to ScyllaDB");
 
     /* Get the CQL command from fdw_private */
     fmstate->query = strVal(list_nth(fdw_private, 0));
     fmstate->target_attrs = (List *) list_nth(fdw_private, 1);
+
+    ereport(NOTICE,
+            (errmsg("scylla_fdw: preparing remote %s statement",
+                    fmstate->operation == CMD_INSERT ? "INSERT" :
+                    fmstate->operation == CMD_UPDATE ? "UPDATE" :
+                    fmstate->operation == CMD_DELETE ? "DELETE" : "UNKNOWN"),
+             errdetail("%s", fmstate->query)));
 
     /* Prepare the statement */
     fmstate->prepared = scylla_prepare_query(fmstate->conn, fmstate->query, &error_msg);
@@ -539,6 +564,8 @@ scyllaExecForeignInsert(EState *estate,
     ListCell   *lc;
     int         pindex = 0;
 
+    elog(DEBUG1, "scylla_fdw: executing INSERT");
+
     /* Create a statement from the prepared query */
     statement = scylla_create_statement(fmstate->prepared);
     if (statement == NULL)
@@ -593,6 +620,8 @@ scyllaExecForeignUpdate(EState *estate,
     int         num_non_pk;
     int         i;
     int         pindex = 0;
+
+    elog(DEBUG1, "scylla_fdw: executing UPDATE");
 
     /* Create a statement from the prepared query */
     statement = scylla_create_statement(fmstate->prepared);
@@ -672,6 +701,8 @@ scyllaExecForeignDelete(EState *estate,
     int         i;
     int         pindex = 0;
 
+    elog(DEBUG1, "scylla_fdw: executing DELETE");
+
     /* Create a statement from the prepared query */
     statement = scylla_create_statement(fmstate->prepared);
     if (statement == NULL)
@@ -726,6 +757,8 @@ scyllaEndForeignModify(EState *estate,
 
     if (fmstate == NULL)
         return;
+
+    elog(DEBUG1, "scylla_fdw: ending foreign modify operation");
 
     /* Release prepared statement */
     if (fmstate->prepared != NULL)
