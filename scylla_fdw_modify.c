@@ -298,33 +298,36 @@ scyllaPlanForeignModify(PlannerInfo *root,
             pfree(query);
 
             /* Rebuild targetAttrs to match prepared statement order:
-             * non-PK columns first (for SET), then PK columns (for WHERE) */
-            targetAttrs = NIL;
-            for (attnum = 1; attnum <= tupdesc->natts; attnum++)
+             * updated non-PK columns first (for SET), then PK columns (for WHERE) */
             {
-                Form_pg_attribute attr = TupleDescAttr(tupdesc, attnum - 1);
-                bool is_pk = false;
-
-                if (attr->attisdropped)
-                    continue;
-
-                /* Check if this is a PK column */
-                for (i = 0; i < num_pk_attrs; i++)
+                List *updated_cols = targetAttrs;  /* Save the list of updated columns */
+                targetAttrs = NIL;
+                
+                /* Add updated non-PK columns */
+                foreach(lc, updated_cols)
                 {
-                    if (pk_attrs[i] == attnum)
+                    int updated_attnum = lfirst_int(lc);
+                    bool is_pk = false;
+                    
+                    /* Check if this is a PK column */
+                    for (i = 0; i < num_pk_attrs; i++)
                     {
-                        is_pk = true;
-                        break;
+                        if (pk_attrs[i] == updated_attnum)
+                        {
+                            is_pk = true;
+                            break;
+                        }
                     }
+                    
+                    /* Only add non-PK columns to SET clause */
+                    if (!is_pk)
+                        targetAttrs = lappend_int(targetAttrs, updated_attnum);
                 }
-
-                /* Add non-PK columns first */
-                if (!is_pk)
-                    targetAttrs = lappend_int(targetAttrs, attnum);
+                
+                /* Then add PK columns for WHERE clause */
+                for (i = 0; i < num_pk_attrs; i++)
+                    targetAttrs = lappend_int(targetAttrs, pk_attrs[i]);
             }
-            /* Then add PK columns */
-            for (i = 0; i < num_pk_attrs; i++)
-                targetAttrs = lappend_int(targetAttrs, pk_attrs[i]);
 
             break;
 
