@@ -1,0 +1,10 @@
+{
+    "test_desc" : "keyspace creation",
+    "server" : {
+        "version" : {
+            "min" : "4.0.0",
+            "max" : ""
+        }
+    }
+}
+

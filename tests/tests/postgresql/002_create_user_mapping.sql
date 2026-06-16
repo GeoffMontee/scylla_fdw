@@ -1,0 +1,6 @@
+DROP USER MAPPING IF EXISTS FOR @PUSER
+	SERVER scylla_svr;
+
+CREATE USER MAPPING FOR @PUSER
+       SERVER scylla_svr 
+       OPTIONS (username '@SUSER', password '@SPASSWORD');
